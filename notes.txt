@@ -1,0 +1,7 @@
+notes
+
+https://docs.rust-embedded.org/discovery/03-setup/index.html
+
+https://github.com/mciantyre/teensy4-rs
+
+~/.cargo/bin/cargo objcopy --release -- -O ihex hello-world.hex
