@@ -5,3 +5,21 @@ https://docs.rust-embedded.org/discovery/03-setup/index.html
 https://github.com/mciantyre/teensy4-rs
 
 ~/.cargo/bin/cargo objcopy --release -- -O ihex hello-world.hex
+
+https://www.pjrc.com/teensy/loader_linux.html
+
+
+
+
+https://www.digikey.com/en/products/detail/e-switch/KC14A10-001NPS/1804511
+
+https://www.digikey.com/en/products/detail/c-k/CL102J9AS205QA7/566815
+
+https://www.digikey.com/en/products/detail/sparkfun-electronics/COM-12877/5673788
+
+https://www.digikey.com/en/products/detail/c-k/D6R00-F2-LFS/1466346
+
+
+type teens4_pins::common::P6 = B0_10;
+
+imxrt106x/mod.rs : define_base!(B0, 0x401F_813C, 0x401F_832C);

@@ -15,11 +15,25 @@ log = "0.4.11"
 teensy4-panic = "0.2.0"
 imxrt-hal = "*"
 
+usbd-hid = "*"
+usb-device="*"
+imxrt-usbd = "*"
+imxrt-uart-log = "*"
+
 [dependencies.teensy4-bsp]
 version = "0.2"
-features = ["rt"]
+default-features = false
+features = ["rt", "systick"]
 
 # Don't optimize build dependencies, like proc macros.
 # Helps with build times.
 [profile.release.build-override]
 opt-level = 0
+
+[[bin]]
+name="main"
+path="src/main.rs"
+
+[[bin]]
+name="mouse-example"
+path="src/mouse-example.rs"
