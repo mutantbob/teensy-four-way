@@ -5,15 +5,19 @@ use teensy4_bsp as bsp;
 //use teensy4_bsp::LED;
 use teensy4_bsp::hal;
 
+use core::time::Duration;
+//use imxrt_hal::ccm::CCM;
+use imxrt_hal::dcdc::DCDC;
+use imxrt_hal::gpt::{Unclocked, GPT};
+use teensy4_bsp::common::{P14, P15};
+//use teensy4_bsp::t40::Pins;
 use usb_device::prelude::{UsbDeviceBuilder, UsbVidPid};
 use usbd_hid::descriptor::SerializedDescriptor;
 
 pub fn mission4() -> ! {
-    let BLINK_PERIOD = core::time::Duration::from_millis(500);
-    let UART_BAUD = 115_200;
     let (mut led, mut gpt1, mut ccm, switch_pin) = {
-        let duration = BLINK_PERIOD;
-        let logging_baud = UART_BAUD;
+        let duration = core::time::Duration::from_millis(500);
+        let logging_baud = 115_200;
         let hal::Peripherals {
             iomuxc,
             mut ccm,
@@ -27,31 +31,16 @@ pub fn mission4() -> ! {
         let led = bsp::configure_led(pins.p13);
         let switch_pin = pins.p6;
 
-        let (_, ipg_hz) =
-            ccm.pll1
-                .set_arm_clock(hal::ccm::PLL1::ARM_HZ, &mut ccm.handle, &mut dcdc);
-        let mut cfg = ccm.perclk.configure(
+        let gpt1 = rig_timer(
+            duration,
+            &mut dcdc,
+            gpt1,
+            &mut ccm.pll1,
             &mut ccm.handle,
-            hal::ccm::perclk::PODF::DIVIDE_3,
-            hal::ccm::perclk::CLKSEL::IPG(ipg_hz),
+            ccm.perclk,
         );
-        let mut gpt1 = gpt1.clock(&mut cfg);
-        gpt1.set_wait_mode_enable(true);
-        gpt1.set_mode(hal::gpt::Mode::Reset);
-        let GPT_OCR: hal::gpt::OutputCompareRegister = hal::gpt::OutputCompareRegister::One;
 
-        gpt1.set_output_compare_duration(GPT_OCR, duration);
-        let mut dma_channels = dma.clock(&mut ccm.handle);
-        let mut channel = dma_channels[7].take().unwrap();
-        channel.set_interrupt_on_completion(false);
-        let uarts = uart.clock(
-            &mut ccm.handle,
-            hal::ccm::uart::ClockSelect::OSC,
-            hal::ccm::uart::PrescalarSelect::DIVIDE_1,
-        );
-        let uart = uarts.uart2.init(pins.p14, pins.p15, logging_baud).unwrap();
-        let (tx, _) = uart.split();
-        imxrt_uart_log::dma::init(tx, channel, Default::default()).unwrap();
+        initialize_uart(logging_baud, dma, uart, &mut ccm.handle, pins.p14, pins.p15);
         (led, gpt1, ccm.handle, switch_pin)
     };
 
@@ -109,4 +98,48 @@ pub fn mission4() -> ! {
         }
         //systick.delay(5);
     }
+}
+
+fn initialize_uart(
+    logging_baud: u32,
+    dma: imxrt_hal::dma::Unclocked,
+    uart: imxrt_hal::uart::Unclocked,
+    ccm_handle: &mut imxrt_hal::ccm::Handle,
+    pin14: P14,
+    pin15: P15,
+) {
+    let mut dma_channels = dma.clock(ccm_handle);
+    let mut channel = dma_channels[7].take().unwrap();
+    channel.set_interrupt_on_completion(false);
+    let uarts = uart.clock(
+        ccm_handle,
+        hal::ccm::uart::ClockSelect::OSC,
+        hal::ccm::uart::PrescalarSelect::DIVIDE_1,
+    );
+    let uart = uarts.uart2.init(pin14, pin15, logging_baud).unwrap();
+    let (tx, _) = uart.split();
+    imxrt_uart_log::dma::init(tx, channel, Default::default()).unwrap();
+}
+
+fn rig_timer(
+    duration: Duration,
+    mut dcdc: &mut DCDC,
+    gpt1: Unclocked,
+    ccm_pll1: &mut imxrt_hal::ccm::PLL1,
+    ccm_handle: &mut imxrt_hal::ccm::Handle,
+    ccm_perclk: imxrt_hal::ccm::perclk::Multiplexer,
+) -> GPT {
+    let (_, ipg_hz) = ccm_pll1.set_arm_clock(hal::ccm::PLL1::ARM_HZ, ccm_handle, &mut dcdc);
+    let mut cfg = ccm_perclk.configure(
+        ccm_handle,
+        hal::ccm::perclk::PODF::DIVIDE_3,
+        hal::ccm::perclk::CLKSEL::IPG(ipg_hz),
+    );
+    let mut gpt1 = gpt1.clock(&mut cfg);
+    gpt1.set_wait_mode_enable(true);
+    gpt1.set_mode(hal::gpt::Mode::Reset);
+
+    let gpt_ocr: hal::gpt::OutputCompareRegister = hal::gpt::OutputCompareRegister::One;
+    gpt1.set_output_compare_duration(gpt_ocr, duration);
+    gpt1
 }
