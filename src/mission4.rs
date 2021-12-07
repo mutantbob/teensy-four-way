@@ -2,7 +2,6 @@ use crate::support;
 use imxrt_hal::gpio::GPIO;
 //use imxrt_hal::iomuxc::b0::B0_10;
 use teensy4_bsp as bsp;
-//use teensy4_bsp::LED;
 use teensy4_bsp::{hal, LED};
 
 use core::time::Duration;
@@ -11,18 +10,16 @@ use imxrt_hal::dcdc::DCDC;
 use imxrt_hal::gpt::{Unclocked, GPT};
 use teensy4_bsp::common::{P14, P15};
 //use teensy4_bsp::t40::Pins;
+use core::str::Chars;
 use imxrt_usbd::full_speed::BusAdapter;
 use usb_device::device::UsbDevice;
 use usb_device::prelude::{UsbDeviceBuilder, UsbVidPid};
 use usbd_hid::descriptor::SerializedDescriptor;
 use usbd_hid::hid_class::HIDClass;
-//use usb_device::UsbError;
-use core::str::Chars;
-use heapless::Vec;
 
 pub fn mission4() -> ! {
     let (mut led, mut gpt1, mut ccm, switch_pin) = {
-        let duration = core::time::Duration::from_millis(100);
+        let duration = core::time::Duration::from_millis(1);
         let logging_baud = 115_200;
         let hal::Peripherals {
             iomuxc,
@@ -157,7 +154,7 @@ fn translate_char(ch: char) -> Option<[u8; 6]> {
         _ => None,
     }
 }
-
+/*
 fn translate(text: &str) -> Vec<[u8; 6], 20> {
     let mut rval = Vec::<[u8; 6], 20>::new();
 
@@ -169,6 +166,8 @@ fn translate(text: &str) -> Vec<[u8; 6], 20> {
 
     rval
 }
+*/
+//
 
 struct CodeSequence<'a> {
     orig: &'a str,
@@ -183,7 +182,7 @@ impl<'a> CodeSequence<'a> {
         }
     }
 
-    pub fn next(&mut self) -> [u8; 6] {
+    pub fn generate(&mut self) -> [u8; 6] {
         loop {
             let ch = self.iter.next();
             match ch {
@@ -200,39 +199,81 @@ impl<'a> CodeSequence<'a> {
     }
 }
 
+impl<'a> Iterator for CodeSequence<'a> {
+    type Item = [u8; 6];
+
+    fn next(&mut self) -> Option<Self::Item> {
+        Some(self.generate())
+    }
+}
+
+//
+
+struct PushBackIterator<T, I: Iterator<Item = T>> {
+    base: I,
+    buffer: Option<T>,
+}
+
+impl<T, I: Iterator<Item = T>> PushBackIterator<T, I> {
+    pub fn from(base: I) -> PushBackIterator<T, I> {
+        Self { base, buffer: None }
+    }
+
+    pub fn push_back(&mut self, val: T) {
+        self.buffer = Some(val);
+    }
+}
+
+impl<T, I: Iterator<Item = T>> Iterator for PushBackIterator<T, I> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.buffer.take() {
+            None => self.base.next(),
+            Some(val) => Some(val),
+        }
+    }
+}
+
 // https://gist.github.com/MightyPork/6da26e382a7ad91b5496ee55fdc73db2
 fn keyboard_mission3(
     mut led: LED,
-    mut gpt1: &mut GPT,
+    _gpt1: &mut GPT,
     hid: &mut HIDClass<BusAdapter>,
     device: &mut UsbDevice<BusAdapter>,
 ) -> ! {
-    let mut down = false;
-
     let orig = "cthulhu ";
-    let mut msg = CodeSequence::new(orig);
+    let msg = CodeSequence::new(orig);
+    let mut msg = PushBackIterator::from(msg);
 
     loop {
-        support::time_elapse(&mut gpt1, || {
-            led.toggle();
+        let codes: [u8; 6] = msg.next().unwrap();
 
-            let codes: [u8; 6] = msg.next();
+        let cmd = usbd_hid::descriptor::KeyboardReport {
+            modifier: 0,
+            reserved: 0,
+            leds: 0,
+            keycodes: codes,
+        };
 
-            let cmd = usbd_hid::descriptor::KeyboardReport {
-                modifier: 0,
-                reserved: 0,
-                leds: 0,
-                keycodes: codes,
-            };
+        let would_block = match hid.push_input(&cmd) {
+            Ok(_x) => false,
+            Err(_usb_error) => {
+                // probably buffer full, try again later
+                msg.push_back(codes);
+                true
+            }
+        };
 
-            hid.push_input(&cmd).unwrap();
+        if would_block {
+            led.set();
+        } else {
+            led.clear();
+        }
 
-            down = !down;
-        });
         if !device.poll(&mut [hid]) {
             continue;
         }
-        //systick.delay(5);
     }
 }
 
