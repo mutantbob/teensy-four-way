@@ -20,6 +20,8 @@ usb-device="*"
 imxrt-usbd = "*"
 imxrt-uart-log = "*"
 
+heapless="*"
+
 [dependencies.teensy4-bsp]
 version = "0.2"
 default-features = false

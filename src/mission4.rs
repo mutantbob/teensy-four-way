@@ -3,7 +3,7 @@ use imxrt_hal::gpio::GPIO;
 //use imxrt_hal::iomuxc::b0::B0_10;
 use teensy4_bsp as bsp;
 //use teensy4_bsp::LED;
-use teensy4_bsp::hal;
+use teensy4_bsp::{hal, LED};
 
 use core::time::Duration;
 //use imxrt_hal::ccm::CCM;
@@ -11,12 +11,18 @@ use imxrt_hal::dcdc::DCDC;
 use imxrt_hal::gpt::{Unclocked, GPT};
 use teensy4_bsp::common::{P14, P15};
 //use teensy4_bsp::t40::Pins;
+use imxrt_usbd::full_speed::BusAdapter;
+use usb_device::device::UsbDevice;
 use usb_device::prelude::{UsbDeviceBuilder, UsbVidPid};
 use usbd_hid::descriptor::SerializedDescriptor;
+use usbd_hid::hid_class::HIDClass;
+//use usb_device::UsbError;
+use core::str::Chars;
+use heapless::Vec;
 
 pub fn mission4() -> ! {
     let (mut led, mut gpt1, mut ccm, switch_pin) = {
-        let duration = core::time::Duration::from_millis(500);
+        let duration = core::time::Duration::from_millis(100);
         let logging_baud = 115_200;
         let hal::Peripherals {
             iomuxc,
@@ -55,8 +61,12 @@ pub fn mission4() -> ! {
     let bus_adapter = support::new_bus_adapter();
     let bus = usb_device::bus::UsbBusAllocator::new(bus_adapter);
 
-    let mut hid =
-        usbd_hid::hid_class::HIDClass::new(&bus, usbd_hid::descriptor::MouseReport::desc(), 10);
+    let mut hid = usbd_hid::hid_class::HIDClass::new(
+        &bus,
+        //usbd_hid::descriptor::MouseReport::desc(),
+        usbd_hid::descriptor::KeyboardReport::desc(),
+        10,
+    );
     let mut device = UsbDeviceBuilder::new(&bus, UsbVidPid(0x5824, 0x27dd))
         .product("imxrt-usbd")
         .build();
@@ -78,9 +88,16 @@ pub fn mission4() -> ! {
     device.bus().configure();
     led.set();
 
-    loop {
-        switch_pin.is_set();
+    keyboard_mission3(led, &mut gpt1, &mut hid, &mut device)
+}
 
+fn mouse_mission1(
+    mut led: LED,
+    mut gpt1: &mut GPT,
+    hid: &mut HIDClass<BusAdapter>,
+    device: &mut UsbDevice<BusAdapter>,
+) -> ! {
+    loop {
         support::time_elapse(&mut gpt1, || {
             led.toggle();
 
@@ -93,7 +110,173 @@ pub fn mission4() -> ! {
             };
             hid.push_input(&cmd).unwrap();
         });
-        if !device.poll(&mut [&mut hid]) {
+        if !device.poll(&mut [hid]) {
+            continue;
+        }
+        //systick.delay(5);
+    }
+}
+
+// https://gist.github.com/MightyPork/6da26e382a7ad91b5496ee55fdc73db2
+fn keyboard_mission1(
+    mut led: LED,
+    mut gpt1: &mut GPT,
+    hid: &mut HIDClass<BusAdapter>,
+    device: &mut UsbDevice<BusAdapter>,
+) -> ! {
+    loop {
+        support::time_elapse(&mut gpt1, || {
+            led.toggle();
+
+            let cmd = usbd_hid::descriptor::KeyboardReport {
+                modifier: 0,
+                reserved: 0,
+                leds: 0,
+                keycodes: [
+                    0x9, // 'f'
+                    0, 0, 0, 0, 0,
+                ],
+            };
+
+            hid.push_input(&cmd).unwrap();
+        });
+        if !device.poll(&mut [hid]) {
+            continue;
+        }
+        //systick.delay(5);
+    }
+}
+
+fn translate_char(ch: char) -> Option<[u8; 6]> {
+    match ch {
+        'a'..='z' => {
+            let code = (ch as u8) - b'a' + 4;
+            Some([code, 0, 0, 0, 0, 0])
+        }
+        ' ' => Some([0x2c, 0, 0, 0, 0, 0]),
+        _ => None,
+    }
+}
+
+fn translate(text: &str) -> Vec<[u8; 6], 20> {
+    let mut rval = Vec::<[u8; 6], 20>::new();
+
+    for ch in text.chars() {
+        if let Some(codes) = translate_char(ch) {
+            rval.push(codes).unwrap();
+        }
+    }
+
+    rval
+}
+
+struct CodeSequence<'a> {
+    orig: &'a str,
+    iter: Chars<'a>,
+}
+
+impl<'a> CodeSequence<'a> {
+    pub fn new(orig: &'a str) -> CodeSequence<'a> {
+        CodeSequence {
+            orig,
+            iter: orig.chars(),
+        }
+    }
+
+    pub fn next(&mut self) -> [u8; 6] {
+        loop {
+            let ch = self.iter.next();
+            match ch {
+                None => {
+                    self.iter = self.orig.chars();
+                }
+                Some(ch) => {
+                    if let Some(code) = translate_char(ch) {
+                        return code;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// https://gist.github.com/MightyPork/6da26e382a7ad91b5496ee55fdc73db2
+fn keyboard_mission3(
+    mut led: LED,
+    mut gpt1: &mut GPT,
+    hid: &mut HIDClass<BusAdapter>,
+    device: &mut UsbDevice<BusAdapter>,
+) -> ! {
+    let mut down = false;
+
+    let orig = "cthulhu ";
+    let mut msg = CodeSequence::new(orig);
+
+    loop {
+        support::time_elapse(&mut gpt1, || {
+            led.toggle();
+
+            let codes: [u8; 6] = msg.next();
+
+            let cmd = usbd_hid::descriptor::KeyboardReport {
+                modifier: 0,
+                reserved: 0,
+                leds: 0,
+                keycodes: codes,
+            };
+
+            hid.push_input(&cmd).unwrap();
+
+            down = !down;
+        });
+        if !device.poll(&mut [hid]) {
+            continue;
+        }
+        //systick.delay(5);
+    }
+}
+
+fn keyboard_mission2(
+    mut led: LED,
+    hid: &mut HIDClass<BusAdapter>,
+    device: &mut UsbDevice<BusAdapter>,
+) -> ! {
+    let mut buf = [0; 256];
+
+    let mut counter = 0;
+
+    loop {
+        let bacon = hid.pull_raw_output(&mut buf);
+
+        match bacon {
+            Ok(_sz) => {
+                {
+                    counter += 1;
+                    if counter > 16 {
+                        led.toggle();
+                        counter = 0;
+                    }
+                }
+
+                let cmd = usbd_hid::descriptor::KeyboardReport {
+                    modifier: 0,
+                    reserved: 0,
+                    leds: 0,
+                    keycodes: [0x1e, 0, 0, 0, 0, 0],
+                };
+
+                hid.push_input(&cmd).unwrap();
+            }
+            Err(_) => {
+                counter += 1;
+                if counter > 64 {
+                    led.toggle();
+                    counter = 0;
+                }
+            }
+        };
+
+        if !device.poll(&mut [hid]) {
             continue;
         }
         //systick.delay(5);
