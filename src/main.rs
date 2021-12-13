@@ -14,27 +14,22 @@ use teensy4_bsp::LED;
 use teensy4_panic as _;
 
 //mod logging;
-mod mission4;
 mod support;
 
 const LED_PERIOD_MS: u32 = 500;
 
 #[cortex_m_rt::entry]
 fn main() -> ! {
-    if true {
-        mission4::mission4()
-    } else {
-        let p = bsp::Peripherals::take().unwrap();
-        let mut systick = bsp::SysTick::new(cortex_m::Peripherals::take().unwrap().SYST);
-        let pins = bsp::t40::into_pins(p.iomuxc);
-        let mut led = bsp::configure_led(pins.p13);
+    let p = bsp::Peripherals::take().unwrap();
+    let mut systick = bsp::SysTick::new(cortex_m::Peripherals::take().unwrap().SYST);
+    let pins = bsp::t40::into_pins(p.iomuxc);
+    let mut led = bsp::configure_led(pins.p13);
 
-        match 3 {
-            1 => mission1(pins.p6, &mut led, &mut systick),
-            2 => mission2(pins.p6, &mut led, &mut systick),
-            3 => mission3(pins.p6, &mut led, &mut systick),
-            _ => mission0(&mut led, &mut systick),
-        }
+    match 3 {
+        1 => mission1(pins.p6, &mut led, &mut systick),
+        2 => mission2(pins.p6, &mut led, &mut systick),
+        3 => mission3(pins.p6, &mut led, &mut systick),
+        _ => mission0(&mut led, &mut systick),
     }
 }
 

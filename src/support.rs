@@ -1,7 +1,5 @@
 //! Support library (qualified as `support`) for all examples.
 
-#![no_std]
-
 pub use bsp::hal;
 pub use hal::ral;
 pub use teensy4_bsp as bsp;

@@ -16,10 +16,9 @@ teensy4-panic = "0.2.0"
 imxrt-hal = "*"
 
 usbd-hid = "*"
-usb-device="*"
+usb-device= "*"
 imxrt-usbd = "*"
 imxrt-uart-log = "*"
-
 
 [dependencies.teensy4-bsp]
 version = "0.2"
@@ -38,3 +37,7 @@ path="src/main.rs"
 [[bin]]
 name="mouse-example"
 path="src/mouse-example.rs"
+
+[[bin]]
+name="mission4"
+path="src/mission4.rs"

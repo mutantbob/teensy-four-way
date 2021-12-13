@@ -1,25 +1,38 @@
-use crate::support;
+#![no_std]
+#![no_main]
+
+mod support;
+
 use imxrt_hal::gpio::GPIO;
-//use imxrt_hal::iomuxc::b0::B0_10;
 use teensy4_bsp as bsp;
 use teensy4_bsp::{hal, LED};
+use teensy4_panic as _;
 
 use core::time::Duration;
-//use imxrt_hal::ccm::CCM;
 use imxrt_hal::dcdc::DCDC;
 use imxrt_hal::gpt::{Unclocked, GPT};
 use teensy4_bsp::common::{P14, P15};
-//use teensy4_bsp::t40::Pins;
 use core::str::Chars;
+use imxrt_hal::iomuxc::gpio::Pin;
+use imxrt_hal::iomuxc::{Hysteresis, PullKeep, PullKeepSelect, PullUpDown};
 use imxrt_usbd::full_speed::BusAdapter;
+use teensy4_bsp::hal::gpio::Input;
+use teensy4_bsp::hal::iomuxc;
 use usb_device::device::UsbDevice;
 use usb_device::prelude::{UsbDeviceBuilder, UsbVidPid};
 use usbd_hid::descriptor::SerializedDescriptor;
 use usbd_hid::hid_class::HIDClass;
 
-pub fn mission4() -> ! {
-    let (mut led, mut gpt1, mut ccm, switch_pin) = {
-        let duration = core::time::Duration::from_millis(1);
+struct HardwareParts {
+    led: LED,
+    gpt1: GPT,
+    ccm: imxrt_hal::ccm::Handle,
+    switch_pin: teensy4_bsp::common::P8,
+}
+
+impl HardwareParts {
+    pub fn new(peripherals: hal::Peripherals) -> HardwareParts {
+        let duration = core::time::Duration::from_millis(300);
         let logging_baud = 115_200;
         let hal::Peripherals {
             iomuxc,
@@ -29,10 +42,10 @@ pub fn mission4() -> ! {
             mut dcdc,
             gpt1,
             ..
-        } = hal::Peripherals::take().unwrap();
+        } = peripherals;
         let pins = bsp::t40::into_pins(iomuxc);
         let led = bsp::configure_led(pins.p13);
-        let switch_pin = pins.p6;
+        let mut switch_pin = pins.p8;
 
         let gpt1 = rig_timer(
             duration,
@@ -43,9 +56,30 @@ pub fn mission4() -> ! {
             ccm.perclk,
         );
 
+        rig_pull_down_switch(&mut switch_pin);
+
         initialize_uart(logging_baud, dma, uart, &mut ccm.handle, pins.p14, pins.p15);
-        (led, gpt1, ccm.handle, switch_pin)
-    };
+        HardwareParts {
+            led,
+            gpt1,
+            ccm: ccm.handle,
+            switch_pin,
+        }
+    }
+}
+
+//
+
+#[cortex_m_rt::entry]
+fn main() -> ! {
+    let env = HardwareParts::new(hal::Peripherals::take().unwrap());
+
+    let HardwareParts {
+        mut led,
+        mut gpt1,
+        mut ccm,
+        switch_pin,
+    } = env;
 
     let switch_pin = GPIO::new(switch_pin);
 
@@ -83,65 +117,20 @@ pub fn mission4() -> ! {
     }
 
     device.bus().configure();
-    led.set();
 
-    keyboard_mission3(led, &mut gpt1, &mut hid, &mut device)
+    led.clear();
+
+    keyboard_mission3(led, switch_pin, &mut gpt1, &mut hid, &mut device)
 }
 
-fn mouse_mission1(
-    mut led: LED,
-    mut gpt1: &mut GPT,
-    hid: &mut HIDClass<BusAdapter>,
-    device: &mut UsbDevice<BusAdapter>,
-) -> ! {
-    loop {
-        support::time_elapse(&mut gpt1, || {
-            led.toggle();
+fn rig_pull_down_switch<I: iomuxc::IOMUX>(switch_pin: &mut I) {
+    let cfg = teensy4_bsp::hal::iomuxc::Config::zero()
+        .set_hysteresis(Hysteresis::Enabled)
+        .set_pull_keep(PullKeep::Enabled)
+        .set_pull_keep_select(PullKeepSelect::Pull)
+        .set_pullupdown(PullUpDown::Pullup22k);
 
-            let cmd = usbd_hid::descriptor::MouseReport {
-                x: 4,
-                y: 4,
-                buttons: 0,
-                pan: 0,
-                wheel: 0,
-            };
-            hid.push_input(&cmd).unwrap();
-        });
-        if !device.poll(&mut [hid]) {
-            continue;
-        }
-        //systick.delay(5);
-    }
-}
-
-// https://gist.github.com/MightyPork/6da26e382a7ad91b5496ee55fdc73db2
-fn keyboard_mission1(
-    mut led: LED,
-    mut gpt1: &mut GPT,
-    hid: &mut HIDClass<BusAdapter>,
-    device: &mut UsbDevice<BusAdapter>,
-) -> ! {
-    loop {
-        support::time_elapse(&mut gpt1, || {
-            led.toggle();
-
-            let cmd = usbd_hid::descriptor::KeyboardReport {
-                modifier: 0,
-                reserved: 0,
-                leds: 0,
-                keycodes: [
-                    0x9, // 'f'
-                    0, 0, 0, 0, 0,
-                ],
-            };
-
-            hid.push_input(&cmd).unwrap();
-        });
-        if !device.poll(&mut [hid]) {
-            continue;
-        }
-        //systick.delay(5);
-    }
+    iomuxc::configure(switch_pin, cfg);
 }
 
 fn translate_char(ch: char) -> Option<[u8; 6]> {
@@ -154,19 +143,7 @@ fn translate_char(ch: char) -> Option<[u8; 6]> {
         _ => None,
     }
 }
-/*
-fn translate(text: &str) -> Vec<[u8; 6], 20> {
-    let mut rval = Vec::<[u8; 6], 20>::new();
 
-    for ch in text.chars() {
-        if let Some(codes) = translate_char(ch) {
-            rval.push(codes).unwrap();
-        }
-    }
-
-    rval
-}
-*/
 //
 
 struct CodeSequence<'a> {
@@ -236,9 +213,10 @@ impl<T, I: Iterator<Item = T>> Iterator for PushBackIterator<T, I> {
 }
 
 // https://gist.github.com/MightyPork/6da26e382a7ad91b5496ee55fdc73db2
-fn keyboard_mission3(
+fn keyboard_mission3<P: Pin>(
     mut led: LED,
-    _gpt1: &mut GPT,
+    switch: GPIO<P, Input>,
+    gpt1: &mut GPT,
     hid: &mut HIDClass<BusAdapter>,
     device: &mut UsbDevice<BusAdapter>,
 ) -> ! {
@@ -247,80 +225,47 @@ fn keyboard_mission3(
     let mut msg = PushBackIterator::from(msg);
 
     loop {
-        let codes: [u8; 6] = msg.next().unwrap();
-
-        let cmd = usbd_hid::descriptor::KeyboardReport {
-            modifier: 0,
-            reserved: 0,
-            leds: 0,
-            keycodes: codes,
-        };
-
-        let would_block = match hid.push_input(&cmd) {
-            Ok(_x) => false,
-            Err(_usb_error) => {
-                // probably buffer full, try again later
-                msg.push_back(codes);
-                true
-            }
-        };
-
-        if would_block {
-            led.set();
-        } else {
-            led.clear();
-        }
-
-        if !device.poll(&mut [hid]) {
-            continue;
-        }
-    }
-}
-
-fn keyboard_mission2(
-    mut led: LED,
-    hid: &mut HIDClass<BusAdapter>,
-    device: &mut UsbDevice<BusAdapter>,
-) -> ! {
-    let mut buf = [0; 256];
-
-    let mut counter = 0;
-
-    loop {
-        let bacon = hid.pull_raw_output(&mut buf);
-
-        match bacon {
-            Ok(_sz) => {
-                {
-                    counter += 1;
-                    if counter > 16 {
-                        led.toggle();
-                        counter = 0;
-                    }
-                }
+        let switch_set = switch.is_set();
+        if device.poll(&mut [hid]) {
+            if !switch_set {
+                let codes: [u8; 6] = msg.next().unwrap();
 
                 let cmd = usbd_hid::descriptor::KeyboardReport {
                     modifier: 0,
                     reserved: 0,
                     leds: 0,
-                    keycodes: [0x1e, 0, 0, 0, 0, 0],
+                    keycodes: codes,
                 };
 
-                hid.push_input(&cmd).unwrap();
-            }
-            Err(_) => {
-                counter += 1;
-                if counter > 64 {
-                    led.toggle();
-                    counter = 0;
-                }
-            }
-        };
+                let would_block = match hid.push_input(&cmd) {
+                    Ok(_x) => false,
+                    Err(_usb_error) => {
+                        // probably buffer full, try again later
+                        msg.push_back(codes);
+                        true
+                    }
+                };
 
-        if !device.poll(&mut [hid]) {
-            continue;
+                if would_block {
+                    led.set();
+                } else {
+                    led.clear();
+                }
+            } else {
+                // if we don't keep sending commands, something gets stuck
+                let cmd = usbd_hid::descriptor::KeyboardReport {
+                    modifier: 0,
+                    reserved: 0,
+                    leds: 0,
+                    keycodes: [0, 0, 0, 0, 0, 0],
+                };
+                let _ = hid.push_input(&cmd);
+            }
         }
-        //systick.delay(5);
+
+        support::time_elapse(gpt1, || {
+            led.toggle();
+        });
     }
 }
 
