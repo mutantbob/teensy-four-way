@@ -3,7 +3,7 @@
 use core::str::Chars;
 use usbd_hid::descriptor::KeyboardReport;
 
-fn simple_kr(modifier: u8, keycodes: [u8; 6]) -> KeyboardReport {
+pub fn simple_kr(modifier: u8, keycodes: [u8; 6]) -> KeyboardReport {
     KeyboardReport {
         modifier,
         reserved: 0,
@@ -12,46 +12,50 @@ fn simple_kr(modifier: u8, keycodes: [u8; 6]) -> KeyboardReport {
     }
 }
 
-fn translate_char(ch: char) -> Option<KeyboardReport> {
+pub fn simple_kr1(modifier: u8, key_code_1: u8) -> KeyboardReport {
+    simple_kr(modifier, [key_code_1, 0, 0, 0, 0, 0])
+}
+
+pub fn translate_char(ch: char) -> Option<KeyboardReport> {
     match ch {
         'a'..='z' => {
             let code = (ch as u8) - b'a' + 4;
-            Some(simple_kr(0, [code, 0, 0, 0, 0, 0]))
+            Some(simple_kr1(0, code))
         }
         'A'..='Z' => {
             let code = (ch as u8) - b'A' + 4;
-            Some(simple_kr(2, [code, 0, 0, 0, 0, 0]))
+            Some(simple_kr1(2, code))
         }
         '!'..=')' => {
             let code = (ch as u8) - b'!' + 0x1e;
-            Some(simple_kr(2, [code, 0, 0, 0, 0, 0]))
+            Some(simple_kr1(2, code))
         }
-        '\n' => Some(simple_kr(0, [0x28, 0, 0, 0, 0, 0])),
-        '.' => Some(simple_kr(0, [0x37, 0, 0, 0, 0, 0])),
-        ',' => Some(simple_kr(0, [0x36, 0, 0, 0, 0, 0])),
-        '/' => Some(simple_kr(0, [0x38, 0, 0, 0, 0, 0])),
-        '?' => Some(simple_kr(2, [0x38, 0, 0, 0, 0, 0])),
-        ';' => Some(simple_kr(0, [0x33, 0, 0, 0, 0, 0])),
-        ':' => Some(simple_kr(2, [0x33, 0, 0, 0, 0, 0])),
+        '\n' => Some(simple_kr1(0, 0x28)),
+        '.' => Some(simple_kr1(0, 0x37)),
+        ',' => Some(simple_kr1(0, 0x36)),
+        '/' => Some(simple_kr1(0, 0x38)),
+        '?' => Some(simple_kr1(2, 0x38)),
+        ';' => Some(simple_kr1(0, 0x33)),
+        ':' => Some(simple_kr1(2, 0x33)),
         '1'..='9' => {
             let code = (ch as u8) - b'1' + 0x1e;
-            Some(simple_kr(0, [code, 0, 0, 0, 0, 0]))
+            Some(simple_kr1(0, code))
         }
         '0' => {
             let code = 0x27;
-            Some(simple_kr(0, [code, 0, 0, 0, 0, 0]))
+            Some(simple_kr1(0, code))
         }
-        '-' => Some(simple_kr(0, [0x2d, 0, 0, 0, 0, 0])),
+        '-' => Some(simple_kr1(0, 0x2d)),
         'é' | 'ë' => {
-            Some(simple_kr(0, [8, 0, 0, 0, 0, 0])) // XXX sloppy
+            Some(simple_kr1(0, 8)) // XXX sloppy
         }
         'Å' => {
-            Some(simple_kr(0, [4, 0, 0, 0, 0, 0])) // XXX sloppy
+            Some(simple_kr1(0, 4)) // XXX sloppy
         }
         '°' => {
-            Some(simple_kr(0, [0x2c, 0, 0, 0, 0, 0])) // XXX wrong
+            Some(simple_kr1(0, 0x2c)) // XXX wrong
         }
-        ' ' => Some(simple_kr(0, [0x2c, 0, 0, 0, 0, 0])),
+        ' ' => Some(simple_kr1(0, 0x2c)),
         // lots of stuff is missing, and I'm sure there are keyboard layouts that this is incorrect for.
         _ => None,
     }
@@ -104,7 +108,7 @@ where
                             self.prev_char = Some(ch);
                             if prev_ch == ch {
                                 self.next_val = Some(code);
-                                return simple_kr(0, [0, 0, 0, 0, 0, 0]);
+                                return simple_kr1(0, 0);
                             } else {
                                 return code;
                             }
