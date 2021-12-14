@@ -23,18 +23,18 @@ use usbd_hid::hid_class::HIDClass;
 use core::iter::Map;
 use core::slice::Iter;
 use keycode_translation::{CodeSequence, PushBackIterator};
+use usb_device::bus::UsbBusAllocator;
 
 mod support;
 
 struct HardwareParts {
     led: LED,
     gpt1: GPT,
-    ccm: imxrt_hal::ccm::Handle,
     switch_pin: teensy4_bsp::common::P8,
 }
 
 impl HardwareParts {
-    pub fn new(peripherals: hal::Peripherals) -> HardwareParts {
+    pub fn start_up(peripherals: hal::Peripherals) -> HardwareParts {
         let duration = core::time::Duration::from_millis(300);
         let logging_baud = 115_200;
         let hal::Peripherals {
@@ -62,11 +62,53 @@ impl HardwareParts {
         rig_pull_down_switch(&mut switch_pin);
 
         initialize_uart(logging_baud, dma, uart, &mut ccm.handle, pins.p14, pins.p15);
+
+        let mut ccm = ccm.handle;
+
+        let (ccm_i, ccm_analog) = ccm.raw();
+        support::ccm::initialize(ccm_i, ccm_analog);
+
         HardwareParts {
             led,
             gpt1,
-            ccm: ccm.handle,
             switch_pin,
+        }
+    }
+
+    pub fn stage_2<'a>(self, bus: &'a UsbBusAllocator<BusAdapter>) -> HardwareParts2<'a> {
+        HardwareParts2::new(self, bus)
+    }
+}
+
+//
+
+struct HardwareParts2<'a> {
+    led: LED,
+    gpt1: GPT,
+    switch_pin: teensy4_bsp::common::P8,
+    hid: HIDClass<'a, BusAdapter>,
+    device: UsbDevice<'a, BusAdapter>,
+}
+
+impl<'a> HardwareParts2<'a> {
+    pub fn new(part1: HardwareParts, bus: &'a UsbBusAllocator<BusAdapter>) -> HardwareParts2
+    {
+        let hid = usbd_hid::hid_class::HIDClass::new(
+            &bus,
+            //usbd_hid::descriptor::MouseReport::desc(),
+            usbd_hid::descriptor::KeyboardReport::desc(),
+            10,
+        );
+        let device = UsbDeviceBuilder::new(&bus, UsbVidPid(0x5824, 0x27dd))
+            .product("imxrt-usbd")
+            .build();
+
+        HardwareParts2 {
+            led: part1.led,
+            gpt1: part1.gpt1,
+            switch_pin: part1.switch_pin,
+            hid,
+            device,
         }
     }
 }
@@ -251,35 +293,23 @@ impl ApplicationState {
 
 #[cortex_m_rt::entry]
 fn main() -> ! {
-    let env = HardwareParts::new(hal::Peripherals::take().unwrap());
-
-    let HardwareParts {
-        mut led,
-        mut gpt1,
-        mut ccm,
-        switch_pin,
-    } = env;
-
-    let switch_pin = GPIO::new(switch_pin);
+    let env = HardwareParts::start_up(hal::Peripherals::take().unwrap());
 
     //
     //
-
-    let (ccm, ccm_analog) = ccm.raw();
-    support::ccm::initialize(ccm, ccm_analog);
 
     let bus_adapter = support::new_bus_adapter();
     let bus = usb_device::bus::UsbBusAllocator::new(bus_adapter);
 
-    let mut hid = usbd_hid::hid_class::HIDClass::new(
-        &bus,
-        //usbd_hid::descriptor::MouseReport::desc(),
-        usbd_hid::descriptor::KeyboardReport::desc(),
-        10,
-    );
-    let mut device = UsbDeviceBuilder::new(&bus, UsbVidPid(0x5824, 0x27dd))
-        .product("imxrt-usbd")
-        .build();
+    let env = env.stage_2(&bus);
+
+    let HardwareParts2 {
+        mut led,
+        mut gpt1,
+        switch_pin,
+        mut hid,
+        mut device,
+    } = env;
 
     //
 
@@ -298,6 +328,8 @@ fn main() -> ! {
     device.bus().configure();
 
     led.clear();
+
+    let switch_pin = GPIO::new(switch_pin);
 
     keyboard_mission3(led, switch_pin, &mut gpt1, &mut hid, &mut device)
 }
