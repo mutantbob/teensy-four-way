@@ -17,9 +17,11 @@ use teensy4_bsp::{hal, LED};
 use teensy4_panic as _;
 use usb_device::device::UsbDevice;
 use usb_device::prelude::{UsbDeviceBuilder, UsbVidPid};
-use usbd_hid::descriptor::SerializedDescriptor;
+use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 use usbd_hid::hid_class::HIDClass;
 
+use core::iter::Map;
+use core::slice::Iter;
 use keycode_translation::{CodeSequence, PushBackIterator};
 
 mod support;
@@ -66,6 +68,208 @@ impl HardwareParts {
             ccm: ccm.handle,
             switch_pin,
         }
+    }
+}
+
+//
+
+pub fn spam_keyboard<I>(
+    not_idle: bool,
+    generator: &mut PushBackIterator<KeyboardReport, I>,
+    led: &mut LED,
+    hid: &mut HIDClass<BusAdapter>,
+) where
+    I: Iterator<Item = KeyboardReport>,
+{
+    if not_idle {
+        let cmd = generator.next().unwrap();
+
+        let would_block = match hid.push_input(&cmd) {
+            Ok(_x) => false,
+            Err(_usb_error) => {
+                // probably buffer full, try again later
+                generator.push_back(cmd);
+                true
+            }
+        };
+
+        if would_block {
+            led.set();
+        } else {
+            led.clear();
+        }
+    } else {
+        // if we don't keep sending commands, something gets stuck
+        let cmd = usbd_hid::descriptor::KeyboardReport {
+            modifier: 0,
+            reserved: 0,
+            leds: 0,
+            keycodes: [0, 0, 0, 0, 0, 0],
+        };
+        let _ = hid.push_input(&cmd);
+    }
+}
+
+//
+
+trait MissionMode<P: Pin> {
+    fn reboot(&mut self);
+
+    fn one_usb_pass(
+        &mut self,
+        led: &mut LED,
+        switch: &GPIO<P, Input>,
+        gpt1: &mut GPT,
+        hid: &mut HIDClass<BusAdapter>,
+    );
+
+    fn maybe_deactivate(&mut self) -> bool;
+}
+
+//
+
+/// base iterator for the Ia MissionMode
+type IaBI = core::str::Chars<'static>;
+/// CodeSequence for the Ia MissionMode
+type IaCS = CodeSequence<fn() -> IaBI, IaBI>;
+
+struct Ia {
+    generator: PushBackIterator<KeyboardReport, IaCS>,
+}
+
+impl Ia {
+    fn ia() -> core::str::Chars<'static> {
+        "Ia! Ia! Cthulhu fhtagn.  ".chars()
+    }
+
+    pub fn standard_generator() -> PushBackIterator<KeyboardReport, IaCS> {
+        let msg: IaCS = CodeSequence::from_chars(Self::ia);
+        PushBackIterator::from(msg)
+    }
+}
+
+impl Default for Ia {
+    fn default() -> Self {
+        Ia {
+            generator: Self::standard_generator(),
+        }
+    }
+}
+
+impl<P: Pin> MissionMode<P> for Ia {
+    fn reboot(&mut self) {
+        self.generator = Self::standard_generator();
+    }
+
+    fn one_usb_pass(
+        &mut self,
+        led: &mut LED,
+        switch: &GPIO<P, Input>,
+        _gpt1: &mut GPT,
+        hid: &mut HIDClass<BusAdapter>,
+    ) {
+        if !switch.is_set() {
+            let cmd = self.generator.next().unwrap();
+
+            let would_block = match hid.push_input(&cmd) {
+                Ok(_x) => false,
+                Err(_usb_error) => {
+                    // probably buffer full, try again later
+                    self.generator.push_back(cmd);
+                    true
+                }
+            };
+
+            if would_block {
+                led.set();
+            } else {
+                led.clear();
+            }
+        } else {
+            // if we don't keep sending commands, something gets stuck
+            let cmd = usbd_hid::descriptor::KeyboardReport {
+                modifier: 0,
+                reserved: 0,
+                leds: 0,
+                keycodes: [0, 0, 0, 0, 0, 0],
+            };
+            let _ = hid.push_input(&cmd);
+        }
+    }
+
+    fn maybe_deactivate(&mut self) -> bool {
+        todo!()
+    }
+}
+
+//
+
+/// base iterator for the CallOfCthulhu MissionMode
+type CoCBI = Map<Iter<'static, u8>, fn(&'static u8) -> char>;
+/// CodeSequence for the CallOfCthulhu MissionMode
+type CoCCS = CodeSequence<fn() -> CoCBI, CoCBI>;
+
+struct CallOfCthulhu {
+    generator: PushBackIterator<KeyboardReport, CoCCS>,
+}
+
+impl CallOfCthulhu {
+    fn story_text() -> CoCBI {
+        let orig = include_bytes!("../keycode_translation/src/call-of-cthulhu.txt");
+        orig.iter().map(|&b| b as char)
+    }
+
+    fn standard_generator() -> PushBackIterator<KeyboardReport, CoCCS> {
+        let msg: CoCCS = CodeSequence::from_chars(Self::story_text);
+        PushBackIterator::from(msg)
+    }
+}
+
+impl Default for CallOfCthulhu {
+    fn default() -> Self {
+        CallOfCthulhu {
+            generator: Self::standard_generator(),
+        }
+    }
+}
+
+impl<P: Pin> MissionMode<P> for CallOfCthulhu {
+    fn reboot(&mut self) {
+        self.generator = Self::standard_generator();
+    }
+
+    fn one_usb_pass(
+        &mut self,
+        led: &mut LED,
+        switch: &GPIO<P, Input>,
+        _gpt1: &mut GPT,
+        hid: &mut HIDClass<BusAdapter>,
+    ) {
+        spam_keyboard(!switch.is_set(), &mut self.generator, led, hid)
+    }
+
+    fn maybe_deactivate(&mut self) -> bool {
+        todo!()
+    }
+}
+
+//
+
+struct ApplicationState {
+    mode1: Ia,
+    mode2: CallOfCthulhu,
+}
+
+impl ApplicationState {
+    pub fn new() -> ApplicationState {
+        ApplicationState {
+            mode1: Ia::default(),
+            mode2: CallOfCthulhu::default(),
+        }
+    }
+
+    pub fn curr<P: Pin>(&mut self) -> &mut dyn MissionMode<P> {
+        &mut self.mode2
     }
 }
 
@@ -146,42 +350,11 @@ fn keyboard_mission3<P: Pin>(
     hid: &mut HIDClass<BusAdapter>,
     device: &mut UsbDevice<BusAdapter>,
 ) -> ! {
-    let orig = "Ia! Ia! Cthulhu fhtagn.  ";
-    let orig = include_bytes!("../keycode_translation/src/call-of-cthulhu.txt");
-
-    let msg = CodeSequence::from_chars(|| orig.iter().map(|&b| b as char));
-    let mut msg = PushBackIterator::from(msg);
+    let mut app_state = ApplicationState::new();
 
     loop {
-        let switch_set = switch.is_set();
         if device.poll(&mut [hid]) {
-            if !switch_set {
-                let cmd = msg.next().unwrap();
-
-                let would_block = match hid.push_input(&cmd) {
-                    Ok(_x) => false,
-                    Err(_usb_error) => {
-                        // probably buffer full, try again later
-                        msg.push_back(cmd);
-                        true
-                    }
-                };
-
-                if would_block {
-                    led.set();
-                } else {
-                    led.clear();
-                }
-            } else {
-                // if we don't keep sending commands, something gets stuck
-                let cmd = usbd_hid::descriptor::KeyboardReport {
-                    modifier: 0,
-                    reserved: 0,
-                    leds: 0,
-                    keycodes: [0, 0, 0, 0, 0, 0],
-                };
-                let _ = hid.push_input(&cmd);
-            }
+            app_state.curr().one_usb_pass(&mut led, &switch, gpt1, hid);
         }
 
         support::time_elapse(gpt1, || {

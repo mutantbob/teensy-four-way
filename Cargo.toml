@@ -33,7 +33,7 @@ features = ["rt", "systick"]
 opt-level = 0
 
 [workspace]
-members=[ "keycode_translation"]
+members=[ "keycode_translation" ]
 
 [[bin]]
 name="main"
