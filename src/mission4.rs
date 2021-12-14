@@ -168,33 +168,7 @@ impl<P: Pin> MissionMode<P> for Ia {
         _gpt1: &mut GPT,
         hid: &mut HIDClass<BusAdapter>,
     ) {
-        if !switch.is_set() {
-            let cmd = self.generator.next().unwrap();
-
-            let would_block = match hid.push_input(&cmd) {
-                Ok(_x) => false,
-                Err(_usb_error) => {
-                    // probably buffer full, try again later
-                    self.generator.push_back(cmd);
-                    true
-                }
-            };
-
-            if would_block {
-                led.set();
-            } else {
-                led.clear();
-            }
-        } else {
-            // if we don't keep sending commands, something gets stuck
-            let cmd = usbd_hid::descriptor::KeyboardReport {
-                modifier: 0,
-                reserved: 0,
-                leds: 0,
-                keycodes: [0, 0, 0, 0, 0, 0],
-            };
-            let _ = hid.push_input(&cmd);
-        }
+        spam_keyboard(!switch.is_set(), &mut self.generator, led, hid);
     }
 
     fn maybe_deactivate(&mut self) -> bool {
