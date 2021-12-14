@@ -1,27 +1,28 @@
 #![no_std]
 #![no_main]
 
-mod support;
-
-use imxrt_hal::gpio::GPIO;
-use teensy4_bsp as bsp;
-use teensy4_bsp::{hal, LED};
-use teensy4_panic as _;
-
 use core::time::Duration;
+
 use imxrt_hal::dcdc::DCDC;
+use imxrt_hal::gpio::GPIO;
 use imxrt_hal::gpt::{Unclocked, GPT};
-use teensy4_bsp::common::{P14, P15};
-use core::str::Chars;
 use imxrt_hal::iomuxc::gpio::Pin;
 use imxrt_hal::iomuxc::{Hysteresis, PullKeep, PullKeepSelect, PullUpDown};
 use imxrt_usbd::full_speed::BusAdapter;
+use teensy4_bsp as bsp;
+use teensy4_bsp::common::{P14, P15};
 use teensy4_bsp::hal::gpio::Input;
 use teensy4_bsp::hal::iomuxc;
+use teensy4_bsp::{hal, LED};
+use teensy4_panic as _;
 use usb_device::device::UsbDevice;
 use usb_device::prelude::{UsbDeviceBuilder, UsbVidPid};
 use usbd_hid::descriptor::SerializedDescriptor;
 use usbd_hid::hid_class::HIDClass;
+
+use keycode_translation::{CodeSequence, PushBackIterator};
+
+mod support;
 
 struct HardwareParts {
     led: LED,
@@ -133,84 +134,9 @@ fn rig_pull_down_switch<I: iomuxc::IOMUX>(switch_pin: &mut I) {
     iomuxc::configure(switch_pin, cfg);
 }
 
-fn translate_char(ch: char) -> Option<[u8; 6]> {
-    match ch {
-        'a'..='z' => {
-            let code = (ch as u8) - b'a' + 4;
-            Some([code, 0, 0, 0, 0, 0])
-        }
-        ' ' => Some([0x2c, 0, 0, 0, 0, 0]),
-        _ => None,
-    }
-}
-
 //
 
-struct CodeSequence<'a> {
-    orig: &'a str,
-    iter: Chars<'a>,
-}
-
-impl<'a> CodeSequence<'a> {
-    pub fn new(orig: &'a str) -> CodeSequence<'a> {
-        CodeSequence {
-            orig,
-            iter: orig.chars(),
-        }
-    }
-
-    pub fn generate(&mut self) -> [u8; 6] {
-        loop {
-            let ch = self.iter.next();
-            match ch {
-                None => {
-                    self.iter = self.orig.chars();
-                }
-                Some(ch) => {
-                    if let Some(code) = translate_char(ch) {
-                        return code;
-                    }
-                }
-            }
-        }
-    }
-}
-
-impl<'a> Iterator for CodeSequence<'a> {
-    type Item = [u8; 6];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        Some(self.generate())
-    }
-}
-
 //
-
-struct PushBackIterator<T, I: Iterator<Item = T>> {
-    base: I,
-    buffer: Option<T>,
-}
-
-impl<T, I: Iterator<Item = T>> PushBackIterator<T, I> {
-    pub fn from(base: I) -> PushBackIterator<T, I> {
-        Self { base, buffer: None }
-    }
-
-    pub fn push_back(&mut self, val: T) {
-        self.buffer = Some(val);
-    }
-}
-
-impl<T, I: Iterator<Item = T>> Iterator for PushBackIterator<T, I> {
-    type Item = T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.buffer.take() {
-            None => self.base.next(),
-            Some(val) => Some(val),
-        }
-    }
-}
 
 // https://gist.github.com/MightyPork/6da26e382a7ad91b5496ee55fdc73db2
 fn keyboard_mission3<P: Pin>(
@@ -220,28 +146,23 @@ fn keyboard_mission3<P: Pin>(
     hid: &mut HIDClass<BusAdapter>,
     device: &mut UsbDevice<BusAdapter>,
 ) -> ! {
-    let orig = "cthulhu ";
-    let msg = CodeSequence::new(orig);
+    let orig = "Ia! Ia! Cthulhu fhtagn.  ";
+    let orig = include_bytes!("../keycode_translation/src/call-of-cthulhu.txt");
+
+    let msg = CodeSequence::from_chars(|| orig.iter().map(|&b| b as char));
     let mut msg = PushBackIterator::from(msg);
 
     loop {
         let switch_set = switch.is_set();
         if device.poll(&mut [hid]) {
             if !switch_set {
-                let codes: [u8; 6] = msg.next().unwrap();
-
-                let cmd = usbd_hid::descriptor::KeyboardReport {
-                    modifier: 0,
-                    reserved: 0,
-                    leds: 0,
-                    keycodes: codes,
-                };
+                let cmd = msg.next().unwrap();
 
                 let would_block = match hid.push_input(&cmd) {
                     Ok(_x) => false,
                     Err(_usb_error) => {
                         // probably buffer full, try again later
-                        msg.push_back(codes);
+                        msg.push_back(cmd);
                         true
                     }
                 };

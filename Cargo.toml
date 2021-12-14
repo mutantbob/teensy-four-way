@@ -20,6 +20,8 @@ usb-device= "*"
 imxrt-usbd = "*"
 imxrt-uart-log = "*"
 
+keycode-translation = { path = "keycode_translation" }
+
 [dependencies.teensy4-bsp]
 version = "0.2"
 default-features = false
@@ -30,13 +32,12 @@ features = ["rt", "systick"]
 [profile.release.build-override]
 opt-level = 0
 
+[workspace]
+members=[ "keycode_translation"]
+
 [[bin]]
 name="main"
 path="src/main.rs"
-
-[[bin]]
-name="mouse-example"
-path="src/mouse-example.rs"
 
 [[bin]]
 name="mission4"
