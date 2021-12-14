@@ -1,12 +1,7 @@
 #![no_std]
 
-// #[cfg( not(feature="std"))]
-// extern crate alloc;
-
-//use core::str::Chars;
 use core::str::Chars;
 use usbd_hid::descriptor::KeyboardReport;
-//use alloc::boxed::Box;
 
 fn simple_kr(modifier: u8, keycodes: [u8; 6]) -> KeyboardReport {
     KeyboardReport {
@@ -76,7 +71,7 @@ where
     F: Fn() -> I,
     I: Iterator<Item = char>,
 {
-    pub fn from_str(orig: &'a str) -> CodeSequence<impl Fn() -> Chars<'a>, Chars<'a>> {
+    pub fn new_from_str(orig: &'a str) -> CodeSequence<impl Fn() -> Chars<'a>, Chars<'a>> {
         CodeSequence::from_chars(|| orig.chars())
     }
 

@@ -13,7 +13,6 @@ use teensy4_bsp::SysTick;
 use teensy4_bsp::LED;
 use teensy4_panic as _;
 
-//mod logging;
 mod support;
 
 const LED_PERIOD_MS: u32 = 500;
