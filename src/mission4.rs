@@ -27,10 +27,13 @@ use usb_device::bus::UsbBusAllocator;
 
 mod support;
 
-struct MyPins
-{
+struct MyPins {
     led: LED,
     switch_pin: teensy4_bsp::common::P8,
+    rotary_pin_1: teensy4_bsp::common::P9,
+    rotary_pin_2: teensy4_bsp::common::P10,
+    rotary_pin_3: teensy4_bsp::common::P11,
+    rotary_pin_4: teensy4_bsp::common::P12,
 }
 
 //
@@ -53,14 +56,14 @@ impl HardwareParts {
             gpt1,
             ..
         } = peripherals;
+
         let pins = bsp::t40::into_pins(iomuxc);
         let led = bsp::configure_led(pins.p13);
-
-        let mut switch_pin = pins.p8;
-        rig_pull_down_switch(&mut switch_pin);
-
-        let rotary_pin_1 = pins.p9;
-        let rotary_pin_2 = pins.p10;
+        let switch_pin = rigged_pull_down_switch(pins.p8);
+        let rotary_pin_1 = rigged_pull_down_switch(pins.p9);
+        let rotary_pin_2 = rigged_pull_down_switch(pins.p10);
+        let rotary_pin_3 = rigged_pull_down_switch(pins.p11);
+        let rotary_pin_4 = rigged_pull_down_switch(pins.p12);
 
         initialize_uart(logging_baud, dma, uart, &mut ccm.handle, pins.p14, pins.p15);
 
@@ -82,6 +85,10 @@ impl HardwareParts {
             pins: MyPins {
                 led,
                 switch_pin,
+                rotary_pin_1,
+                rotary_pin_2,
+                rotary_pin_3,
+                rotary_pin_4,
             },
             gpt1,
         }
@@ -95,15 +102,14 @@ impl HardwareParts {
 //
 
 struct HardwareParts2<'a> {
-    pins:MyPins,
+    pins: MyPins,
     gpt1: GPT,
     hid: HIDClass<'a, BusAdapter>,
     device: UsbDevice<'a, BusAdapter>,
 }
 
 impl<'a> HardwareParts2<'a> {
-    pub fn new(part1: HardwareParts, bus: &'a UsbBusAllocator<BusAdapter>) -> HardwareParts2
-    {
+    pub fn new(part1: HardwareParts, bus: &'a UsbBusAllocator<BusAdapter>) -> HardwareParts2 {
         let hid = usbd_hid::hid_class::HIDClass::new(
             &bus,
             //usbd_hid::descriptor::MouseReport::desc(),
@@ -314,10 +320,15 @@ fn main() -> ! {
     let env = env.stage_2(&bus);
 
     let HardwareParts2 {
-        pins: MyPins {
-            mut led,
-            switch_pin,
-        },
+        pins:
+            MyPins {
+                mut led,
+                switch_pin,
+                rotary_pin_1,
+                rotary_pin_2,
+                rotary_pin_3,
+                rotary_pin_4,
+            },
         mut gpt1,
         mut hid,
         mut device,
@@ -354,6 +365,11 @@ fn rig_pull_down_switch<I: iomuxc::IOMUX>(switch_pin: &mut I) {
         .set_pullupdown(PullUpDown::Pullup22k);
 
     iomuxc::configure(switch_pin, cfg);
+}
+
+fn rigged_pull_down_switch<I: iomuxc::IOMUX>(mut switch_pin: I) -> I {
+    rig_pull_down_switch(&mut switch_pin);
+    switch_pin
 }
 
 //
