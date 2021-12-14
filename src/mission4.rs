@@ -22,7 +22,7 @@ use usbd_hid::hid_class::HIDClass;
 
 use core::iter::Map;
 use core::slice::Iter;
-use keycode_translation::{CodeSequence, PushBackIterator};
+use keycode_translation::{simple_kr1, CodeSequence, PushBackIterator};
 use usb_device::bus::UsbBusAllocator;
 
 mod support;
@@ -94,7 +94,7 @@ impl HardwareParts {
         }
     }
 
-    pub fn stage_2<'a>(self, bus: &'a UsbBusAllocator<BusAdapter>) -> HardwareParts2<'a> {
+    pub fn stage_2(self, bus: &UsbBusAllocator<BusAdapter>) -> HardwareParts2 {
         HardwareParts2::new(self, bus)
     }
 }
@@ -111,12 +111,12 @@ struct HardwareParts2<'a> {
 impl<'a> HardwareParts2<'a> {
     pub fn new(part1: HardwareParts, bus: &'a UsbBusAllocator<BusAdapter>) -> HardwareParts2 {
         let hid = usbd_hid::hid_class::HIDClass::new(
-            &bus,
+            bus,
             //usbd_hid::descriptor::MouseReport::desc(),
             usbd_hid::descriptor::KeyboardReport::desc(),
             10,
         );
-        let device = UsbDeviceBuilder::new(&bus, UsbVidPid(0x5824, 0x27dd))
+        let device = UsbDeviceBuilder::new(bus, UsbVidPid(0x5824, 0x27dd))
             .product("imxrt-usbd")
             .build();
 
@@ -181,7 +181,7 @@ trait MissionMode<P: Pin> {
         hid: &mut HIDClass<BusAdapter>,
     );
 
-    fn maybe_deactivate(&mut self) -> bool;
+    fn maybe_deactivate(&mut self, hid: &mut HIDClass<BusAdapter>) -> bool;
 }
 
 //
@@ -229,8 +229,8 @@ impl<P: Pin> MissionMode<P> for Ia {
         spam_keyboard(!switch.is_set(), &mut self.generator, led, hid);
     }
 
-    fn maybe_deactivate(&mut self) -> bool {
-        todo!()
+    fn maybe_deactivate(&mut self, hid: &mut HIDClass<BusAdapter>) -> bool {
+        hid.push_input(&simple_kr1(0, 0)).is_ok()
     }
 }
 
@@ -280,14 +280,15 @@ impl<P: Pin> MissionMode<P> for CallOfCthulhu {
         spam_keyboard(!switch.is_set(), &mut self.generator, led, hid)
     }
 
-    fn maybe_deactivate(&mut self) -> bool {
-        todo!()
+    fn maybe_deactivate(&mut self, hid: &mut HIDClass<BusAdapter>) -> bool {
+        hid.push_input(&simple_kr1(0, 0)).is_ok()
     }
 }
 
 //
 
 struct ApplicationState {
+    mode: RotaryMode,
     mode1: Ia,
     mode2: CallOfCthulhu,
 }
@@ -295,13 +296,18 @@ struct ApplicationState {
 impl ApplicationState {
     pub fn new() -> ApplicationState {
         ApplicationState {
+            mode: RotaryMode::Unknown,
             mode1: Ia::default(),
             mode2: CallOfCthulhu::default(),
         }
     }
 
-    pub fn curr<P: Pin>(&mut self) -> &mut dyn MissionMode<P> {
-        &mut self.mode2
+    pub fn curr<P: Pin>(&mut self) -> Option<&mut dyn MissionMode<P>> {
+        match self.mode {
+            RotaryMode::Position1 => Some(&mut self.mode1),
+            RotaryMode::Position2 => Some(&mut self.mode2),
+            RotaryMode::Unknown => None,
+        }
     }
 }
 
@@ -352,9 +358,16 @@ fn main() -> ! {
 
     led.clear();
 
-    let switch_pin = GPIO::new(switch_pin);
+    let switch_pin: GPIO<teensy4_bsp::common::P8, Input> = GPIO::new(switch_pin);
 
-    keyboard_mission3(led, switch_pin, &mut gpt1, &mut hid, &mut device)
+    keyboard_mission3(
+        led,
+        switch_pin,
+        GPIO::new(rotary_pin_1),
+        &mut gpt1,
+        &mut hid,
+        &mut device,
+    )
 }
 
 fn rig_pull_down_switch<I: iomuxc::IOMUX>(switch_pin: &mut I) {
@@ -374,12 +387,30 @@ fn rigged_pull_down_switch<I: iomuxc::IOMUX>(mut switch_pin: I) -> I {
 
 //
 
+#[derive(Copy, Clone, PartialEq)]
+enum RotaryMode {
+    Position1,
+    Position2,
+    Unknown,
+}
+
+impl RotaryMode {
+    pub fn get<R1: Pin>(rotary_pin_1: &GPIO<R1, Input>) -> RotaryMode {
+        if !rotary_pin_1.is_set() {
+            RotaryMode::Position1
+        } else {
+            RotaryMode::Position2
+        }
+    }
+}
+
 //
 
 // https://gist.github.com/MightyPork/6da26e382a7ad91b5496ee55fdc73db2
-fn keyboard_mission3<P: Pin>(
+fn keyboard_mission3<P: Pin, R1: Pin>(
     mut led: LED,
     switch: GPIO<P, Input>,
+    rotary_pin_1: GPIO<R1, Input>,
     gpt1: &mut GPT,
     hid: &mut HIDClass<BusAdapter>,
     device: &mut UsbDevice<BusAdapter>,
@@ -388,7 +419,22 @@ fn keyboard_mission3<P: Pin>(
 
     loop {
         if device.poll(&mut [hid]) {
-            app_state.curr().one_usb_pass(&mut led, &switch, gpt1, hid);
+            let new_mode = RotaryMode::get(&rotary_pin_1);
+
+            if app_state.mode != new_mode {
+                let should_reboot = match app_state.curr::<P>() {
+                    Some(curr) => curr.maybe_deactivate(hid),
+                    None => true,
+                };
+                if should_reboot {
+                    app_state.mode = new_mode;
+                    if let Some(curr) = app_state.curr::<P>() {
+                        curr.reboot();
+                    }
+                }
+            } else if let Some(curr) = app_state.curr::<P>() {
+                curr.one_usb_pass(&mut led, &switch, gpt1, hid);
+            }
         }
 
         support::time_elapse(gpt1, || {
