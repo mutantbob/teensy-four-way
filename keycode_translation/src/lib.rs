@@ -64,6 +64,8 @@ where
 {
     orig: F,
     iter: I,
+    prev_char: Option<char>,
+    next_val: Option<KeyboardReport>,
 }
 
 impl<'a, F, I> CodeSequence<F, I>
@@ -77,20 +79,42 @@ where
 
     pub fn from_chars(orig: F) -> CodeSequence<F, I> {
         let iter = orig();
-        CodeSequence { orig, iter }
+        CodeSequence {
+            orig,
+            iter,
+            prev_char: None,
+            next_val: None,
+        }
     }
 
     pub fn generate(&mut self) -> KeyboardReport {
         loop {
+            if let Some(kr) = self.next_val.take() {
+                return kr;
+            }
+
             let ch = self.iter.next();
             match ch {
                 None => {
                     self.iter = (self.orig)();
                 }
                 Some(ch) => {
-                    if let Some(code) = translate_char(ch) {
-                        return code;
-                    }
+                    match (self.prev_char.take(), translate_char(ch)) {
+                        (Some(prev_ch), Some(code)) => {
+                            self.prev_char = Some(ch);
+                            if prev_ch == ch {
+                                self.next_val = Some(code);
+                                return simple_kr(0, [0, 0, 0, 0, 0, 0]);
+                            } else {
+                                return code;
+                            }
+                        }
+                        (None, Some(code)) => {
+                            self.prev_char = Some(ch);
+                            return code;
+                        }
+                        (_, None) => {}
+                    };
                 }
             }
         }
@@ -137,7 +161,7 @@ impl<T, I: Iterator<Item = T>> Iterator for PushBackIterator<T, I> {
 
 #[cfg(test)]
 mod tests {
-    use crate::translate_char;
+    use crate::{translate_char, CodeSequence};
 
     #[test]
     pub fn test_translate() {
@@ -163,5 +187,18 @@ mod tests {
                 col += 1;
             }
         }
+    }
+
+    #[test]
+    pub fn test2() {
+        let mut src = CodeSequence::from_chars(|| "horror".chars());
+
+        let _h = src.generate();
+        let _o = src.generate();
+        let _r = src.generate();
+        let z = src.generate();
+        assert_eq!(0, z.keycodes[0]);
+        let r = src.generate();
+        assert_eq!(21, r.keycodes[0]);
     }
 }
