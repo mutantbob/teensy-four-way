@@ -27,10 +27,17 @@ use usb_device::bus::UsbBusAllocator;
 
 mod support;
 
-struct HardwareParts {
+struct MyPins
+{
     led: LED,
-    gpt1: GPT,
     switch_pin: teensy4_bsp::common::P8,
+}
+
+//
+
+struct HardwareParts {
+    pins: MyPins,
+    gpt1: GPT,
 }
 
 impl HardwareParts {
@@ -48,7 +55,14 @@ impl HardwareParts {
         } = peripherals;
         let pins = bsp::t40::into_pins(iomuxc);
         let led = bsp::configure_led(pins.p13);
+
         let mut switch_pin = pins.p8;
+        rig_pull_down_switch(&mut switch_pin);
+
+        let rotary_pin_1 = pins.p9;
+        let rotary_pin_2 = pins.p10;
+
+        initialize_uart(logging_baud, dma, uart, &mut ccm.handle, pins.p14, pins.p15);
 
         let gpt1 = rig_timer(
             duration,
@@ -59,19 +73,17 @@ impl HardwareParts {
             ccm.perclk,
         );
 
-        rig_pull_down_switch(&mut switch_pin);
-
-        initialize_uart(logging_baud, dma, uart, &mut ccm.handle, pins.p14, pins.p15);
-
         let mut ccm = ccm.handle;
 
         let (ccm_i, ccm_analog) = ccm.raw();
         support::ccm::initialize(ccm_i, ccm_analog);
 
         HardwareParts {
-            led,
+            pins: MyPins {
+                led,
+                switch_pin,
+            },
             gpt1,
-            switch_pin,
         }
     }
 
@@ -83,9 +95,8 @@ impl HardwareParts {
 //
 
 struct HardwareParts2<'a> {
-    led: LED,
+    pins:MyPins,
     gpt1: GPT,
-    switch_pin: teensy4_bsp::common::P8,
     hid: HIDClass<'a, BusAdapter>,
     device: UsbDevice<'a, BusAdapter>,
 }
@@ -104,9 +115,8 @@ impl<'a> HardwareParts2<'a> {
             .build();
 
         HardwareParts2 {
-            led: part1.led,
+            pins: part1.pins,
             gpt1: part1.gpt1,
-            switch_pin: part1.switch_pin,
             hid,
             device,
         }
@@ -304,9 +314,11 @@ fn main() -> ! {
     let env = env.stage_2(&bus);
 
     let HardwareParts2 {
-        mut led,
+        pins: MyPins {
+            mut led,
+            switch_pin,
+        },
         mut gpt1,
-        switch_pin,
         mut hid,
         mut device,
     } = env;
