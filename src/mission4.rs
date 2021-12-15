@@ -22,19 +22,21 @@ use keycode_translation::{simple_kr1, CodeSequence, PushBackIterator};
 
 mod support;
 
-struct MyPins {
+type SwitchPin = teensy4_bsp::common::P8;
+
+struct MyPins<SP: Pin> {
     led: LED,
-    switch_pin: teensy4_bsp::common::P8,
-    rotary_pin_1: teensy4_bsp::common::P9,
-    rotary_pin_2: teensy4_bsp::common::P10,
-    rotary_pin_3: teensy4_bsp::common::P11,
-    rotary_pin_4: teensy4_bsp::common::P12,
+    switch_pin: GPIO<SP, Input>,
+    rotary_pin_1: GPIO<teensy4_bsp::common::P9, Input>,
+    rotary_pin_2: GPIO<teensy4_bsp::common::P10, Input>,
+    rotary_pin_3: GPIO<teensy4_bsp::common::P11, Input>,
+    rotary_pin_4: GPIO<teensy4_bsp::common::P12, Input>,
 }
 
 //
 
 struct HardwareParts {
-    pins: MyPins,
+    pins: MyPins<SwitchPin>,
     gpt1: GPT,
 }
 
@@ -54,11 +56,11 @@ impl HardwareParts {
 
         let pins = bsp::t40::into_pins(iomuxc);
         let led = bsp::configure_led(pins.p13);
-        let switch_pin = support::rigged_pull_down_switch(pins.p8);
-        let rotary_pin_1 = support::rigged_pull_down_switch(pins.p9);
-        let rotary_pin_2 = support::rigged_pull_down_switch(pins.p10);
-        let rotary_pin_3 = support::rigged_pull_down_switch(pins.p11);
-        let rotary_pin_4 = support::rigged_pull_down_switch(pins.p12);
+        let switch_pin = GPIO::new(support::rigged_pull_down_switch(pins.p8));
+        let rotary_pin_1 = GPIO::new(support::rigged_pull_down_switch(pins.p9));
+        let rotary_pin_2 = GPIO::new(support::rigged_pull_down_switch(pins.p10));
+        let rotary_pin_3 = GPIO::new(support::rigged_pull_down_switch(pins.p11));
+        let rotary_pin_4 = GPIO::new(support::rigged_pull_down_switch(pins.p12));
 
         support::initialize_uart(logging_baud, dma, uart, &mut ccm.handle, pins.p14, pins.p15);
 
@@ -96,8 +98,12 @@ impl HardwareParts {
 
 //
 
+///
+///  HardwareParts is split into two initialization phases, because allocating a bus at the beginning
+/// appears to fail.  I am not sure why
+///
 struct HardwareParts2<'a> {
-    pins: MyPins,
+    pins: MyPins<SwitchPin>,
     gpt1: GPT,
     hid: HIDClass<'a, BusAdapter>,
     device: UsbDevice<'a, BusAdapter>,
@@ -225,7 +231,7 @@ impl<P: Pin> MissionMode<P> for Ia {
     }
 
     fn maybe_deactivate(&mut self, hid: &mut HIDClass<BusAdapter>) -> bool {
-        hid.push_input(&simple_kr1(0, 0)).is_ok()
+        keyboard_keepalive(hid)
     }
 }
 
@@ -276,7 +282,34 @@ impl<P: Pin> MissionMode<P> for CallOfCthulhu {
     }
 
     fn maybe_deactivate(&mut self, hid: &mut HIDClass<BusAdapter>) -> bool {
-        hid.push_input(&simple_kr1(0, 0)).is_ok()
+        keyboard_keepalive(hid)
+    }
+}
+
+//
+
+struct Eeeeee {}
+
+impl<P: Pin> MissionMode<P> for Eeeeee {
+    fn reboot(&mut self) {}
+
+    fn one_usb_pass(
+        &mut self,
+        _led: &mut LED,
+        switch: &GPIO<P, Input>,
+        _gpt1: &mut GPT,
+        hid: &mut HIDClass<BusAdapter>,
+    ) {
+        let code = if !switch.is_set() {
+            b'e' - b'a' + 4
+        } else {
+            0
+        };
+        let _ = hid.push_input(&simple_kr1(0, code));
+    }
+
+    fn maybe_deactivate(&mut self, hid: &mut HIDClass<BusAdapter>) -> bool {
+        keyboard_keepalive(hid)
     }
 }
 
@@ -286,6 +319,7 @@ struct ApplicationState {
     mode: RotaryMode,
     mode1: Ia,
     mode2: CallOfCthulhu,
+    mode3: Eeeeee,
 }
 
 impl ApplicationState {
@@ -294,6 +328,7 @@ impl ApplicationState {
             mode: RotaryMode::Unknown,
             mode1: Ia::default(),
             mode2: CallOfCthulhu::default(),
+            mode3: Eeeeee {},
         }
     }
 
@@ -301,7 +336,8 @@ impl ApplicationState {
         match self.mode {
             RotaryMode::Position1 => Some(&mut self.mode1),
             RotaryMode::Position2 => Some(&mut self.mode2),
-            RotaryMode::Unknown => None,
+            RotaryMode::Position3 => Some(&mut self.mode3),
+            _ => None,
         }
     }
 }
@@ -321,15 +357,7 @@ fn main() -> ! {
     let env = env.stage_2(&bus);
 
     let HardwareParts2 {
-        pins:
-            MyPins {
-                mut led,
-                switch_pin,
-                rotary_pin_1,
-                rotary_pin_2,
-                rotary_pin_3,
-                rotary_pin_4,
-            },
+        mut pins,
         mut gpt1,
         mut hid,
         mut device,
@@ -351,18 +379,9 @@ fn main() -> ! {
 
     device.bus().configure();
 
-    led.clear();
+    pins.led.clear();
 
-    let switch_pin: GPIO<teensy4_bsp::common::P8, Input> = GPIO::new(switch_pin);
-
-    keyboard_mission3(
-        led,
-        switch_pin,
-        GPIO::new(rotary_pin_1),
-        &mut gpt1,
-        &mut hid,
-        &mut device,
-    )
+    keyboard_mission3::<teensy4_bsp::common::P8>(&mut pins, &mut gpt1, &mut hid, &mut device)
 }
 
 //
@@ -371,26 +390,31 @@ fn main() -> ! {
 enum RotaryMode {
     Position1,
     Position2,
+    Position3,
+    Position4,
     Unknown,
 }
 
 impl RotaryMode {
-    pub fn get<R1: Pin>(rotary_pin_1: &GPIO<R1, Input>) -> RotaryMode {
-        if !rotary_pin_1.is_set() {
+    pub fn get<P: Pin>(pins: &MyPins<P>) -> RotaryMode {
+        if !pins.rotary_pin_1.is_set() {
             RotaryMode::Position1
-        } else {
+        } else if !pins.rotary_pin_2.is_set() {
             RotaryMode::Position2
+        } else if !pins.rotary_pin_3.is_set() {
+            RotaryMode::Position3
+        } else if !pins.rotary_pin_4.is_set() {
+            RotaryMode::Position4
+        } else {
+            RotaryMode::Unknown
         }
     }
 }
 
 //
 
-// https://gist.github.com/MightyPork/6da26e382a7ad91b5496ee55fdc73db2
-fn keyboard_mission3<P: Pin, R1: Pin>(
-    mut led: LED,
-    switch: GPIO<P, Input>,
-    rotary_pin_1: GPIO<R1, Input>,
+fn keyboard_mission3<P: Pin>(
+    pins: &mut MyPins<P>,
     gpt1: &mut GPT,
     hid: &mut HIDClass<BusAdapter>,
     device: &mut UsbDevice<BusAdapter>,
@@ -399,26 +423,43 @@ fn keyboard_mission3<P: Pin, R1: Pin>(
 
     loop {
         if device.poll(&mut [hid]) {
-            let new_mode = RotaryMode::get(&rotary_pin_1);
+            let new_mode = RotaryMode::get(pins);
 
             if app_state.mode != new_mode {
                 let should_reboot = match app_state.curr::<P>() {
                     Some(curr) => curr.maybe_deactivate(hid),
-                    None => true,
+                    None => {
+                        keyboard_keepalive(hid);
+                        true
+                    }
                 };
                 if should_reboot {
                     app_state.mode = new_mode;
                     if let Some(curr) = app_state.curr::<P>() {
                         curr.reboot();
+                    } else {
                     }
                 }
-            } else if let Some(curr) = app_state.curr::<P>() {
-                curr.one_usb_pass(&mut led, &switch, gpt1, hid);
+            } else {
+                match app_state.curr::<P>() {
+                    Some(curr) => {
+                        curr.one_usb_pass(&mut pins.led, &pins.switch_pin, gpt1, hid);
+                    }
+                    None => {
+                        keyboard_keepalive(hid);
+                    }
+                }
             }
         }
 
         support::time_elapse(gpt1, || {
-            led.toggle();
+            pins.led.toggle();
         });
     }
+}
+
+/// tell the USB host that no keys are pressed.
+/// If we don't do this while we're idle, something goes wrong and the keyboard does not work until a power cycle
+fn keyboard_keepalive(hid: &mut HIDClass<BusAdapter>) -> bool {
+    hid.push_input(&simple_kr1(0, 0)).is_ok()
 }
