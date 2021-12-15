@@ -137,31 +137,9 @@ where
     }
 }
 
-pub struct PushBackIterator<T, I: Iterator<Item = T>> {
-    base: I,
-    buffer: Option<T>,
-}
-
-impl<T, I: Iterator<Item = T>> PushBackIterator<T, I> {
-    pub fn from(base: I) -> PushBackIterator<T, I> {
-        Self { base, buffer: None }
-    }
-
-    pub fn push_back(&mut self, val: T) {
-        self.buffer = Some(val);
-    }
-}
-
-impl<T, I: Iterator<Item = T>> Iterator for PushBackIterator<T, I> {
-    type Item = T;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.buffer.take() {
-            None => self.base.next(),
-            Some(val) => Some(val),
-        }
-    }
-}
+//
+//
+//
 
 #[cfg(test)]
 mod tests {

@@ -18,7 +18,7 @@ use usb_device::prelude::{UsbDeviceBuilder, UsbVidPid};
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 use usbd_hid::hid_class::HIDClass;
 
-use keycode_translation::{simple_kr1, CodeSequence, PushBackIterator};
+use keycode_translation::{simple_kr1, CodeSequence};
 
 mod support;
 
@@ -132,45 +132,6 @@ impl<'a> HardwareParts2<'a> {
 
 //
 
-pub fn spam_keyboard<I>(
-    not_idle: bool,
-    generator: &mut PushBackIterator<KeyboardReport, I>,
-    led: &mut LED,
-    hid: &mut HIDClass<BusAdapter>,
-) where
-    I: Iterator<Item = KeyboardReport>,
-{
-    if not_idle {
-        let cmd = generator.next().unwrap();
-
-        let would_block = match hid.push_input(&cmd) {
-            Ok(_x) => false,
-            Err(_usb_error) => {
-                // probably buffer full, try again later
-                generator.push_back(cmd);
-                true
-            }
-        };
-
-        if would_block {
-            led.set();
-        } else {
-            led.clear();
-        }
-    } else {
-        // if we don't keep sending commands, something gets stuck
-        let cmd = usbd_hid::descriptor::KeyboardReport {
-            modifier: 0,
-            reserved: 0,
-            leds: 0,
-            keycodes: [0, 0, 0, 0, 0, 0],
-        };
-        let _ = hid.push_input(&cmd);
-    }
-}
-
-//
-
 trait MissionMode<P: Pin> {
     fn reboot(&mut self);
 
@@ -193,7 +154,7 @@ type IaBI = core::str::Chars<'static>;
 type IaCS = CodeSequence<fn() -> IaBI, IaBI>;
 
 struct Ia {
-    generator: PushBackIterator<KeyboardReport, IaCS>,
+    generator: IaCS,
     deactivated: bool,
 }
 
@@ -202,9 +163,8 @@ impl Ia {
         "Ia! Ia! Cthulhu fhtagn.  ".chars()
     }
 
-    pub fn standard_generator() -> PushBackIterator<KeyboardReport, IaCS> {
-        let msg: IaCS = CodeSequence::from_chars(Self::ia);
-        PushBackIterator::from(msg)
+    pub fn standard_generator() -> IaCS {
+        CodeSequence::from_chars(Self::ia)
     }
 }
 
@@ -255,7 +215,7 @@ type CoCBI = Map<Iter<'static, u8>, fn(&'static u8) -> char>;
 type CoCCS = CodeSequence<fn() -> CoCBI, CoCBI>;
 
 struct CallOfCthulhu {
-    generator: PushBackIterator<KeyboardReport, CoCCS>,
+    generator: CoCCS,
     deactivated: bool,
 }
 
@@ -265,9 +225,8 @@ impl CallOfCthulhu {
         orig.iter().map(|&b| b as char)
     }
 
-    fn standard_generator() -> PushBackIterator<KeyboardReport, CoCCS> {
-        let msg: CoCCS = CodeSequence::from_chars(Self::story_text);
-        PushBackIterator::from(msg)
+    fn standard_generator() -> CoCCS {
+        CodeSequence::from_chars(Self::story_text)
     }
 }
 

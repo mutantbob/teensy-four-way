@@ -34,7 +34,3 @@ opt-level = 0
 
 [workspace]
 members=[ "keycode_translation" ]
-
-[[bin]]
-name="mission4"
-path="src/mission4.rs"
