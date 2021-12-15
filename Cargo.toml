@@ -36,9 +36,5 @@ opt-level = 0
 members=[ "keycode_translation" ]
 
 [[bin]]
-name="main"
-path="src/main.rs"
-
-[[bin]]
 name="mission4"
 path="src/mission4.rs"

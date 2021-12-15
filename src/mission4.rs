@@ -1,29 +1,24 @@
 #![no_std]
 #![no_main]
 
-use core::time::Duration;
+use core::iter::Map;
+use core::slice::Iter;
 
-use imxrt_hal::dcdc::DCDC;
 use imxrt_hal::gpio::GPIO;
-use imxrt_hal::gpt::{Unclocked, GPT};
+use imxrt_hal::gpt::GPT;
 use imxrt_hal::iomuxc::gpio::Pin;
-use imxrt_hal::iomuxc::{Hysteresis, PullKeep, PullKeepSelect, PullUpDown};
 use imxrt_usbd::full_speed::BusAdapter;
 use teensy4_bsp as bsp;
-use teensy4_bsp::common::{P14, P15};
 use teensy4_bsp::hal::gpio::Input;
-use teensy4_bsp::hal::iomuxc;
 use teensy4_bsp::{hal, LED};
 use teensy4_panic as _;
+use usb_device::bus::UsbBusAllocator;
 use usb_device::device::UsbDevice;
 use usb_device::prelude::{UsbDeviceBuilder, UsbVidPid};
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 use usbd_hid::hid_class::HIDClass;
 
-use core::iter::Map;
-use core::slice::Iter;
 use keycode_translation::{simple_kr1, CodeSequence, PushBackIterator};
-use usb_device::bus::UsbBusAllocator;
 
 mod support;
 
@@ -59,15 +54,15 @@ impl HardwareParts {
 
         let pins = bsp::t40::into_pins(iomuxc);
         let led = bsp::configure_led(pins.p13);
-        let switch_pin = rigged_pull_down_switch(pins.p8);
-        let rotary_pin_1 = rigged_pull_down_switch(pins.p9);
-        let rotary_pin_2 = rigged_pull_down_switch(pins.p10);
-        let rotary_pin_3 = rigged_pull_down_switch(pins.p11);
-        let rotary_pin_4 = rigged_pull_down_switch(pins.p12);
+        let switch_pin = support::rigged_pull_down_switch(pins.p8);
+        let rotary_pin_1 = support::rigged_pull_down_switch(pins.p9);
+        let rotary_pin_2 = support::rigged_pull_down_switch(pins.p10);
+        let rotary_pin_3 = support::rigged_pull_down_switch(pins.p11);
+        let rotary_pin_4 = support::rigged_pull_down_switch(pins.p12);
 
-        initialize_uart(logging_baud, dma, uart, &mut ccm.handle, pins.p14, pins.p15);
+        support::initialize_uart(logging_baud, dma, uart, &mut ccm.handle, pins.p14, pins.p15);
 
-        let gpt1 = rig_timer(
+        let gpt1 = support::rig_timer(
             duration,
             &mut dcdc,
             gpt1,
@@ -370,21 +365,6 @@ fn main() -> ! {
     )
 }
 
-fn rig_pull_down_switch<I: iomuxc::IOMUX>(switch_pin: &mut I) {
-    let cfg = teensy4_bsp::hal::iomuxc::Config::zero()
-        .set_hysteresis(Hysteresis::Enabled)
-        .set_pull_keep(PullKeep::Enabled)
-        .set_pull_keep_select(PullKeepSelect::Pull)
-        .set_pullupdown(PullUpDown::Pullup22k);
-
-    iomuxc::configure(switch_pin, cfg);
-}
-
-fn rigged_pull_down_switch<I: iomuxc::IOMUX>(mut switch_pin: I) -> I {
-    rig_pull_down_switch(&mut switch_pin);
-    switch_pin
-}
-
 //
 
 #[derive(Copy, Clone, PartialEq)]
@@ -441,48 +421,4 @@ fn keyboard_mission3<P: Pin, R1: Pin>(
             led.toggle();
         });
     }
-}
-
-fn initialize_uart(
-    logging_baud: u32,
-    dma: imxrt_hal::dma::Unclocked,
-    uart: imxrt_hal::uart::Unclocked,
-    ccm_handle: &mut imxrt_hal::ccm::Handle,
-    pin14: P14,
-    pin15: P15,
-) {
-    let mut dma_channels = dma.clock(ccm_handle);
-    let mut channel = dma_channels[7].take().unwrap();
-    channel.set_interrupt_on_completion(false);
-    let uarts = uart.clock(
-        ccm_handle,
-        hal::ccm::uart::ClockSelect::OSC,
-        hal::ccm::uart::PrescalarSelect::DIVIDE_1,
-    );
-    let uart = uarts.uart2.init(pin14, pin15, logging_baud).unwrap();
-    let (tx, _) = uart.split();
-    imxrt_uart_log::dma::init(tx, channel, Default::default()).unwrap();
-}
-
-fn rig_timer(
-    duration: Duration,
-    mut dcdc: &mut DCDC,
-    gpt1: Unclocked,
-    ccm_pll1: &mut imxrt_hal::ccm::PLL1,
-    ccm_handle: &mut imxrt_hal::ccm::Handle,
-    ccm_perclk: imxrt_hal::ccm::perclk::Multiplexer,
-) -> GPT {
-    let (_, ipg_hz) = ccm_pll1.set_arm_clock(hal::ccm::PLL1::ARM_HZ, ccm_handle, &mut dcdc);
-    let mut cfg = ccm_perclk.configure(
-        ccm_handle,
-        hal::ccm::perclk::PODF::DIVIDE_3,
-        hal::ccm::perclk::CLKSEL::IPG(ipg_hz),
-    );
-    let mut gpt1 = gpt1.clock(&mut cfg);
-    gpt1.set_wait_mode_enable(true);
-    gpt1.set_mode(hal::gpt::Mode::Reset);
-
-    let gpt_ocr: hal::gpt::OutputCompareRegister = hal::gpt::OutputCompareRegister::One;
-    gpt1.set_output_compare_duration(gpt_ocr, duration);
-    gpt1
 }

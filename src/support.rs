@@ -1,8 +1,18 @@
+// I copied this from imxrt-usbd 's examples/teensy/src/ directory and trimmed it down.
+
 //! Support library (qualified as `support`) for all examples.
+
+use core::time::Duration;
 
 pub use bsp::hal;
 pub use hal::ral;
 pub use teensy4_bsp as bsp;
+
+use crate::support::bsp::common::{P14, P15};
+use crate::support::bsp::hal::dcdc::DCDC;
+use crate::support::bsp::hal::gpt::{Unclocked, GPT};
+use crate::support::bsp::hal::iomuxc;
+use crate::support::bsp::hal::iomuxc::{Hysteresis, PullKeep, PullKeepSelect, PullUpDown};
 
 /// Allocates a `BusAdapter`
 ///
@@ -20,17 +30,6 @@ pub fn new_bus_adapter() -> imxrt_usbd::full_speed::BusAdapter {
         imxrt_usbd::full_speed::BusAdapter::new(UsbPeripherals::usb1(), &mut ENDPOINT_MEMORY)
     }
 }
-
-/*
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-    log::error!("{}", info);
-    for _ in 0..10_000 {
-        imxrt_uart_log::dma::poll();
-    }
-    teensy4_panic::sos()
-}
-*/
 
 //
 // Keep in sync with the imxrt_usbd::Peripherals example!
@@ -95,19 +94,6 @@ pub mod ccm {
     }
 }
 
-/// Extra peripherals to support the examples.
-pub struct Peripherals {
-    /// The LED on pin 13.
-    pub led: bsp::LED,
-    /// A separate timer.
-    ///
-    /// The time is **disabled** when it's
-    /// returned from `setup()`.
-    pub gpt1: hal::gpt::GPT,
-    /// The CCM handle for USB clocking.
-    pub ccm: hal::ccm::Handle,
-}
-
 /// Drive the logging implementation.
 pub fn poll_logger() {
     imxrt_uart_log::dma::poll();
@@ -116,78 +102,6 @@ pub fn poll_logger() {
 /// Required for proper function of `time_elapse`.
 const GPT_OCR: hal::gpt::OutputCompareRegister = hal::gpt::OutputCompareRegister::One;
 
-/// Set up other system functions that support these examples.
-///
-/// The `duration` affects the GPT period. The `logging_baud`
-/// affects the UART baud.
-///
-/// See the implementation to understand what peripherals are
-/// taken, and how the system is configured. Note that you may
-/// be responsible for polling the logging implementation.
-///
-/// # Panics
-///
-/// Panics if any of the HAL or BSP peripherals are already taken,
-/// or if the logging system fails to initialize.
-pub fn setup(duration: core::time::Duration, logging_baud: u32) -> Peripherals {
-    let hal::Peripherals {
-        iomuxc,
-        mut ccm,
-        dma,
-        uart,
-        mut dcdc,
-        gpt1,
-        ..
-    } = hal::Peripherals::take().unwrap();
-    let pins = bsp::t40::into_pins(iomuxc);
-    let led = bsp::configure_led(pins.p13);
-
-    // Set the ARM core to run at 600MHz. IPG clock runs at 25%
-    // of that speed.
-    let (_, ipg_hz) = ccm
-        .pll1
-        .set_arm_clock(hal::ccm::PLL1::ARM_HZ, &mut ccm.handle, &mut dcdc);
-
-    // 150MHz / 3 = 50MHz for PERCLK.
-    let mut cfg = ccm.perclk.configure(
-        &mut ccm.handle,
-        hal::ccm::perclk::PODF::DIVIDE_3,
-        hal::ccm::perclk::CLKSEL::IPG(ipg_hz),
-    );
-
-    // GPT runs on PERCLK.
-    let mut gpt1 = gpt1.clock(&mut cfg);
-    gpt1.set_wait_mode_enable(true);
-    // Once OCR1 compares, reset the counter.
-    gpt1.set_mode(hal::gpt::Mode::Reset);
-
-    gpt1.set_output_compare_duration(GPT_OCR, duration);
-
-    // DMA initialization (for logging)
-    let mut dma_channels = dma.clock(&mut ccm.handle);
-    let mut channel = dma_channels[7].take().unwrap();
-    channel.set_interrupt_on_completion(false); // We'll poll the logger ourselves...
-
-    //
-    // UART initialization (for logging)
-    //
-    let uarts = uart.clock(
-        &mut ccm.handle,
-        hal::ccm::uart::ClockSelect::OSC,
-        hal::ccm::uart::PrescalarSelect::DIVIDE_1,
-    );
-    let uart = uarts.uart2.init(pins.p14, pins.p15, logging_baud).unwrap();
-
-    let (tx, _) = uart.split();
-    imxrt_uart_log::dma::init(tx, channel, Default::default()).unwrap();
-
-    Peripherals {
-        led,
-        gpt1,
-        ccm: ccm.handle,
-    }
-}
-
 /// Once the GPT has elapsed, invoke `func`.
 pub fn time_elapse(gpt: &mut hal::gpt::GPT, func: impl FnOnce()) {
     let mut status = gpt.output_compare_status(GPT_OCR);
@@ -195,4 +109,63 @@ pub fn time_elapse(gpt: &mut hal::gpt::GPT, func: impl FnOnce()) {
         status.clear();
         func();
     }
+}
+
+fn rig_pull_down_switch<I: iomuxc::IOMUX>(switch_pin: &mut I) {
+    let cfg = teensy4_bsp::hal::iomuxc::Config::zero()
+        .set_hysteresis(Hysteresis::Enabled)
+        .set_pull_keep(PullKeep::Enabled)
+        .set_pull_keep_select(PullKeepSelect::Pull)
+        .set_pullupdown(PullUpDown::Pullup22k);
+
+    iomuxc::configure(switch_pin, cfg);
+}
+
+pub fn rigged_pull_down_switch<I: iomuxc::IOMUX>(mut switch_pin: I) -> I {
+    rig_pull_down_switch(&mut switch_pin);
+    switch_pin
+}
+
+pub fn initialize_uart(
+    logging_baud: u32,
+    dma: imxrt_hal::dma::Unclocked,
+    uart: imxrt_hal::uart::Unclocked,
+    ccm_handle: &mut imxrt_hal::ccm::Handle,
+    pin14: P14,
+    pin15: P15,
+) {
+    let mut dma_channels = dma.clock(ccm_handle);
+    let mut channel = dma_channels[7].take().unwrap();
+    channel.set_interrupt_on_completion(false);
+    let uarts = uart.clock(
+        ccm_handle,
+        hal::ccm::uart::ClockSelect::OSC,
+        hal::ccm::uart::PrescalarSelect::DIVIDE_1,
+    );
+    let uart = uarts.uart2.init(pin14, pin15, logging_baud).unwrap();
+    let (tx, _) = uart.split();
+    imxrt_uart_log::dma::init(tx, channel, Default::default()).unwrap();
+}
+
+pub fn rig_timer(
+    duration: Duration,
+    mut dcdc: &mut DCDC,
+    gpt1: Unclocked,
+    ccm_pll1: &mut imxrt_hal::ccm::PLL1,
+    ccm_handle: &mut imxrt_hal::ccm::Handle,
+    ccm_perclk: imxrt_hal::ccm::perclk::Multiplexer,
+) -> GPT {
+    let (_, ipg_hz) = ccm_pll1.set_arm_clock(hal::ccm::PLL1::ARM_HZ, ccm_handle, &mut dcdc);
+    let mut cfg = ccm_perclk.configure(
+        ccm_handle,
+        hal::ccm::perclk::PODF::DIVIDE_3,
+        hal::ccm::perclk::CLKSEL::IPG(ipg_hz),
+    );
+    let mut gpt1 = gpt1.clock(&mut cfg);
+    gpt1.set_wait_mode_enable(true);
+    gpt1.set_mode(hal::gpt::Mode::Reset);
+
+    let gpt_ocr: hal::gpt::OutputCompareRegister = hal::gpt::OutputCompareRegister::One;
+    gpt1.set_output_compare_duration(gpt_ocr, duration);
+    gpt1
 }
