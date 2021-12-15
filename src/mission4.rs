@@ -180,9 +180,9 @@ trait MissionMode<P: Pin> {
         switch: &GPIO<P, Input>,
         gpt1: &mut GPT,
         hid: &mut HIDClass<BusAdapter>,
-    );
+    ) -> KeyboardReport;
 
-    fn maybe_deactivate(&mut self, hid: &mut HIDClass<BusAdapter>) -> bool;
+    fn maybe_deactivate(&mut self, hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport>;
 }
 
 //
@@ -194,6 +194,7 @@ type IaCS = CodeSequence<fn() -> IaBI, IaBI>;
 
 struct Ia {
     generator: PushBackIterator<KeyboardReport, IaCS>,
+    deactivated: bool,
 }
 
 impl Ia {
@@ -211,6 +212,7 @@ impl Default for Ia {
     fn default() -> Self {
         Ia {
             generator: Self::standard_generator(),
+            deactivated: false,
         }
     }
 }
@@ -222,16 +224,26 @@ impl<P: Pin> MissionMode<P> for Ia {
 
     fn one_usb_pass(
         &mut self,
-        led: &mut LED,
+        _led: &mut LED,
         switch: &GPIO<P, Input>,
         _gpt1: &mut GPT,
-        hid: &mut HIDClass<BusAdapter>,
-    ) {
-        spam_keyboard(!switch.is_set(), &mut self.generator, led, hid);
+        _hid: &mut HIDClass<BusAdapter>,
+    ) -> KeyboardReport {
+        let not_idle = !switch.is_set();
+        if not_idle {
+            self.generator.next().unwrap()
+        } else {
+            simple_kr1(0, 0)
+        }
     }
 
-    fn maybe_deactivate(&mut self, hid: &mut HIDClass<BusAdapter>) -> bool {
-        keyboard_keepalive(hid)
+    fn maybe_deactivate(&mut self, _hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport> {
+        if self.deactivated {
+            None
+        } else {
+            self.deactivated = true;
+            Some(simple_kr1(0, 0))
+        }
     }
 }
 
@@ -244,6 +256,7 @@ type CoCCS = CodeSequence<fn() -> CoCBI, CoCBI>;
 
 struct CallOfCthulhu {
     generator: PushBackIterator<KeyboardReport, CoCCS>,
+    deactivated: bool,
 }
 
 impl CallOfCthulhu {
@@ -262,6 +275,7 @@ impl Default for CallOfCthulhu {
     fn default() -> Self {
         CallOfCthulhu {
             generator: Self::standard_generator(),
+            deactivated: false,
         }
     }
 }
@@ -273,22 +287,35 @@ impl<P: Pin> MissionMode<P> for CallOfCthulhu {
 
     fn one_usb_pass(
         &mut self,
-        led: &mut LED,
+        _led: &mut LED,
         switch: &GPIO<P, Input>,
         _gpt1: &mut GPT,
-        hid: &mut HIDClass<BusAdapter>,
-    ) {
-        spam_keyboard(!switch.is_set(), &mut self.generator, led, hid)
+        _hid: &mut HIDClass<BusAdapter>,
+    ) -> KeyboardReport {
+        let not_idle = !switch.is_set();
+        if not_idle {
+            self.generator.next().unwrap()
+        } else {
+            simple_kr1(0, 0)
+        }
+        //spam_keyboard(not_idle, &mut self.generator, led, hid)
     }
 
-    fn maybe_deactivate(&mut self, hid: &mut HIDClass<BusAdapter>) -> bool {
-        keyboard_keepalive(hid)
+    fn maybe_deactivate(&mut self, _hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport> {
+        if self.deactivated {
+            None
+        } else {
+            self.deactivated = true;
+            Some(simple_kr1(0, 0))
+        }
     }
 }
 
 //
 
-struct Eeeeee {}
+struct Eeeeee {
+    deactivated: bool,
+}
 
 impl<P: Pin> MissionMode<P> for Eeeeee {
     fn reboot(&mut self) {}
@@ -298,18 +325,25 @@ impl<P: Pin> MissionMode<P> for Eeeeee {
         _led: &mut LED,
         switch: &GPIO<P, Input>,
         _gpt1: &mut GPT,
-        hid: &mut HIDClass<BusAdapter>,
-    ) {
-        let code = if !switch.is_set() {
-            b'e' - b'a' + 4
-        } else {
-            0
-        };
-        let _ = hid.push_input(&simple_kr1(0, code));
+        _hid: &mut HIDClass<BusAdapter>,
+    ) -> KeyboardReport {
+        let code = if !switch.is_set() { b'e' - b'a' + 4 } else { 0 };
+        simple_kr1(0, code)
     }
 
-    fn maybe_deactivate(&mut self, hid: &mut HIDClass<BusAdapter>) -> bool {
-        keyboard_keepalive(hid)
+    fn maybe_deactivate(&mut self, _hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport> {
+        if self.deactivated {
+            None
+        } else {
+            self.deactivated = true;
+            Some(simple_kr1(0, 0))
+        }
+    }
+}
+
+impl Default for Eeeeee {
+    fn default() -> Self {
+        Eeeeee { deactivated: false }
     }
 }
 
@@ -328,7 +362,7 @@ impl ApplicationState {
             mode: RotaryMode::Unknown,
             mode1: Ia::default(),
             mode2: CallOfCthulhu::default(),
-            mode3: Eeeeee {},
+            mode3: Eeeeee::default(),
         }
     }
 
@@ -421,34 +455,42 @@ fn keyboard_mission3<P: Pin>(
 ) -> ! {
     let mut app_state = ApplicationState::new();
 
+    let mut pushed_back = None;
+
     loop {
         if device.poll(&mut [hid]) {
             let new_mode = RotaryMode::get(pins);
 
-            if app_state.mode != new_mode {
-                let should_reboot = match app_state.curr::<P>() {
-                    Some(curr) => curr.maybe_deactivate(hid),
+            let keyboard_report = if app_state.mode != new_mode {
+                pushed_back.take();
+                let delay_reboot = app_state
+                    .curr::<P>()
+                    .and_then(|curr| curr.maybe_deactivate(hid));
+                match delay_reboot {
                     None => {
-                        keyboard_keepalive(hid);
-                        true
+                        app_state.mode = new_mode;
+                        if let Some(curr) = app_state.curr::<P>() {
+                            curr.reboot();
+                            curr.one_usb_pass(&mut pins.led, &pins.switch_pin, gpt1, hid)
+                        } else {
+                            simple_kr1(0, 0)
+                        }
                     }
-                };
-                if should_reboot {
-                    app_state.mode = new_mode;
-                    if let Some(curr) = app_state.curr::<P>() {
-                        curr.reboot();
-                    } else {
-                    }
+                    Some(kr) => kr,
                 }
             } else {
                 match app_state.curr::<P>() {
-                    Some(curr) => {
-                        curr.one_usb_pass(&mut pins.led, &pins.switch_pin, gpt1, hid);
-                    }
-                    None => {
-                        keyboard_keepalive(hid);
-                    }
+                    Some(curr) => match pushed_back.take() {
+                        None => curr.one_usb_pass(&mut pins.led, &pins.switch_pin, gpt1, hid),
+                        Some(kr) => kr,
+                    },
+                    None => simple_kr1(0, 0),
                 }
+            };
+
+            match hid.push_input(&keyboard_report) {
+                Ok(_) => {}
+                Err(_) => pushed_back = Some(keyboard_report),
             }
         }
 
@@ -456,10 +498,4 @@ fn keyboard_mission3<P: Pin>(
             pins.led.toggle();
         });
     }
-}
-
-/// tell the USB host that no keys are pressed.
-/// If we don't do this while we're idle, something goes wrong and the keyboard does not work until a power cycle
-fn keyboard_keepalive(hid: &mut HIDClass<BusAdapter>) -> bool {
-    hid.push_input(&simple_kr1(0, 0)).is_ok()
 }
