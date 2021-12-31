@@ -2,9 +2,6 @@
 #![no_main]
 #![feature(default_alloc_error_handler)]
 
-use core::iter::Map;
-use core::slice::Iter;
-
 use imxrt_hal::gpio::GPIO;
 use imxrt_hal::gpt::GPT;
 use imxrt_hal::iomuxc::gpio::Pin;
@@ -153,10 +150,8 @@ trait MissionMode<P: Pin> {
 
 //
 
-/// base iterator for the Ia MissionMode
-type IaBI = core::str::Chars<'static>;
 /// CodeSequence for the Ia MissionMode
-type IaCS = CodeSequence<'static, IaBI>;
+type IaCS = CodeSequence<'static>;
 
 struct Ia {
     generator: IaCS,
@@ -165,8 +160,7 @@ struct Ia {
 
 impl Ia {
     pub fn standard_generator() -> IaCS {
-        let rval: CodeSequence<'static, IaBI> =
-            CodeSequence::new_from_str("Ia! Ia! Cthulhu fhtagn.  ");
+        let rval: CodeSequence<'static> = CodeSequence::new_from_str("Ia! Ia! Cthulhu fhtagn.  ");
         rval
     }
 }
@@ -212,10 +206,8 @@ impl<P: Pin> MissionMode<P> for Ia {
 
 //
 
-/// base iterator for the CallOfCthulhu MissionMode
-type CoCBI = Map<Iter<'static, u8>, fn(&'static u8) -> char>;
 /// CodeSequence for the CallOfCthulhu MissionMode
-type CoCCS = CodeSequence<'static, CoCBI>;
+type CoCCS = CodeSequence<'static>;
 
 struct CallOfCthulhu {
     generator: CoCCS,
@@ -223,13 +215,13 @@ struct CallOfCthulhu {
 }
 
 impl CallOfCthulhu {
-    fn story_text() -> CoCBI {
+    fn story_text() -> impl Iterator<Item = char> {
         let orig = include_bytes!("../keycode_translation/src/call-of-cthulhu.txt");
         orig.iter().map(|&b| b as char)
     }
 
     fn standard_generator() -> CoCCS {
-        CodeSequence::from_chars(Self::story_text)
+        CodeSequence::new(Self::story_text)
     }
 }
 

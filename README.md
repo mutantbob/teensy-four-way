@@ -27,3 +27,8 @@ If you get `Failed to execute tool: objcopy` you probably need to
 ```
 ~/.cargo/bin/rustup +nightly  component add llvm-tools-previewinfo
 ```
+
+for the unit tests:
+```
+(cd keycode_translation/; ~/.cargo/bin/cargo +nightly  test --target x86_64-unknown-linux-gnu)
+```

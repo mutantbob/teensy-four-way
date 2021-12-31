@@ -2,7 +2,6 @@
 
 extern crate alloc;
 use alloc::boxed::Box;
-use core::str::Chars;
 use usbd_hid::descriptor::KeyboardReport;
 
 pub fn simple_kr(modifier: u8, keycodes: [u8; 6]) -> KeyboardReport {
@@ -63,27 +62,20 @@ pub fn translate_char(ch: char) -> Option<KeyboardReport> {
     }
 }
 
-pub struct CodeSequence<'a, I>
-where
-    I: Iterator<Item = char>,
-{
-    pub orig: Box<dyn 'a + Fn() -> I>,
-    pub iter: I,
+pub struct CodeSequence<'a> {
+    pub orig: Box<dyn 'a + Fn() -> Box<dyn 'a + Iterator<Item = char>>>,
+    pub iter: Box<dyn 'a + Iterator<Item = char>>,
     pub prev_char: Option<char>,
     pub next_val: Option<KeyboardReport>,
 }
 
-impl<'a> CodeSequence<'a, Chars<'a>> {
-    pub fn new_from_str(orig: &'a str) -> CodeSequence<'a, Chars<'a>> {
-        Self::from_chars(|| orig.chars())
-    }
-}
-
-impl<'a, I> CodeSequence<'a, I>
-where
-    I: Iterator<Item = char>,
-{
-    pub fn new(orig: Box<dyn 'a + Fn() -> I>) -> CodeSequence<'a, I> {
+impl<'a> CodeSequence<'a> {
+    pub fn new<F, I: 'a + Iterator<Item = char>>(orig1: F) -> CodeSequence<'a>
+    where
+        F: 'a + Fn() -> I,
+    {
+        let orig: Box<dyn 'a + Fn() -> Box<dyn 'a + Iterator<Item = char>>> =
+            Box::new(move || Box::new(orig1()));
         let iter = orig();
         CodeSequence {
             orig,
@@ -93,8 +85,8 @@ where
         }
     }
 
-    pub fn from_chars<F: 'a + Fn() -> I>(orig: F) -> CodeSequence<'a, I> {
-        Self::new(Box::new(orig))
+    pub fn new_from_str(orig: &'a str) -> CodeSequence<'a> {
+        Self::new(|| orig.chars())
     }
 
     pub fn generate(&mut self) -> KeyboardReport {
@@ -131,10 +123,7 @@ where
     }
 }
 
-impl<'a, I> Iterator for CodeSequence<'a, I>
-where
-    I: Iterator<Item = char>,
-{
+impl<'a> Iterator for CodeSequence<'a> {
     type Item = KeyboardReport;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -178,7 +167,7 @@ mod tests {
 
     #[test]
     pub fn test2() {
-        let mut src = CodeSequence::from_chars(|| "horror".chars());
+        let mut src = CodeSequence::new(|| "horror".chars());
 
         let _h = src.generate();
         let _o = src.generate();
