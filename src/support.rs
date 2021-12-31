@@ -149,13 +149,13 @@ pub fn initialize_uart(
 
 pub fn rig_timer(
     duration: Duration,
-    mut dcdc: &mut DCDC,
+    dcdc: &mut DCDC,
     gpt1: Unclocked,
     ccm_pll1: &mut imxrt_hal::ccm::PLL1,
     ccm_handle: &mut imxrt_hal::ccm::Handle,
     ccm_perclk: imxrt_hal::ccm::perclk::Multiplexer,
 ) -> GPT {
-    let (_, ipg_hz) = ccm_pll1.set_arm_clock(hal::ccm::PLL1::ARM_HZ, ccm_handle, &mut dcdc);
+    let (_, ipg_hz) = ccm_pll1.set_arm_clock(hal::ccm::PLL1::ARM_HZ, ccm_handle, dcdc);
     let mut cfg = ccm_perclk.configure(
         ccm_handle,
         hal::ccm::perclk::PODF::DIVIDE_3,

@@ -272,6 +272,7 @@ impl<P: Pin> MissionMode<P> for CallOfCthulhu {
 
 //
 
+#[derive(Default)]
 struct Eeeeee {
     deactivated: bool,
 }
@@ -297,12 +298,6 @@ impl<P: Pin> MissionMode<P> for Eeeeee {
             self.deactivated = true;
             Some(simple_kr1(0, 0))
         }
-    }
-}
-
-impl Default for Eeeeee {
-    fn default() -> Self {
-        Eeeeee { deactivated: false }
     }
 }
 
