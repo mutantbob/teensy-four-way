@@ -20,6 +20,8 @@ usb-device= "*"
 imxrt-usbd = "*"
 imxrt-uart-log = "*"
 
+alloc-cortex-m = "*"
+
 keycode-translation = { path = "keycode_translation" }
 
 [dependencies.teensy4-bsp]

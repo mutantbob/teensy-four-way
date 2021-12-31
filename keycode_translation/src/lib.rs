@@ -1,5 +1,7 @@
 #![no_std]
 
+extern crate alloc;
+use alloc::boxed::Box;
 use core::str::Chars;
 use usbd_hid::descriptor::KeyboardReport;
 
@@ -61,27 +63,27 @@ pub fn translate_char(ch: char) -> Option<KeyboardReport> {
     }
 }
 
-pub struct CodeSequence<F, I>
+pub struct CodeSequence<'a, I>
 where
-    F: Fn() -> I,
     I: Iterator<Item = char>,
 {
-    orig: F,
-    iter: I,
-    prev_char: Option<char>,
-    next_val: Option<KeyboardReport>,
+    pub orig: Box<dyn 'a + Fn() -> I>,
+    pub iter: I,
+    pub prev_char: Option<char>,
+    pub next_val: Option<KeyboardReport>,
 }
 
-impl<'a, F, I> CodeSequence<F, I>
+impl<'a> CodeSequence<'a, Chars<'a>> {
+    pub fn new_from_str(orig: &'a str) -> CodeSequence<'a, Chars<'a>> {
+        Self::from_chars(|| orig.chars())
+    }
+}
+
+impl<'a, I> CodeSequence<'a, I>
 where
-    F: Fn() -> I,
     I: Iterator<Item = char>,
 {
-    pub fn new_from_str(orig: &'a str) -> CodeSequence<impl Fn() -> Chars<'a>, Chars<'a>> {
-        CodeSequence::from_chars(|| orig.chars())
-    }
-
-    pub fn from_chars(orig: F) -> CodeSequence<F, I> {
+    pub fn new(orig: Box<dyn 'a + Fn() -> I>) -> CodeSequence<'a, I> {
         let iter = orig();
         CodeSequence {
             orig,
@@ -89,6 +91,10 @@ where
             prev_char: None,
             next_val: None,
         }
+    }
+
+    pub fn from_chars<F: 'a + Fn() -> I>(orig: F) -> CodeSequence<'a, I> {
+        Self::new(Box::new(orig))
     }
 
     pub fn generate(&mut self) -> KeyboardReport {
@@ -125,9 +131,8 @@ where
     }
 }
 
-impl<F, I> Iterator for CodeSequence<F, I>
+impl<'a, I> Iterator for CodeSequence<'a, I>
 where
-    F: Fn() -> I,
     I: Iterator<Item = char>,
 {
     type Item = KeyboardReport;

@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![feature(default_alloc_error_handler)]
 
 use core::iter::Map;
 use core::slice::Iter;
@@ -18,9 +19,13 @@ use usb_device::prelude::{UsbDeviceBuilder, UsbVidPid};
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 use usbd_hid::hid_class::HIDClass;
 
+use alloc_cortex_m::CortexMHeap;
 use keycode_translation::{simple_kr1, CodeSequence};
 
 mod support;
+
+#[global_allocator]
+static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
 
 type SwitchPin = teensy4_bsp::common::P8;
 
@@ -151,7 +156,7 @@ trait MissionMode<P: Pin> {
 /// base iterator for the Ia MissionMode
 type IaBI = core::str::Chars<'static>;
 /// CodeSequence for the Ia MissionMode
-type IaCS = CodeSequence<fn() -> IaBI, IaBI>;
+type IaCS = CodeSequence<'static, IaBI>;
 
 struct Ia {
     generator: IaCS,
@@ -159,12 +164,10 @@ struct Ia {
 }
 
 impl Ia {
-    fn ia() -> core::str::Chars<'static> {
-        "Ia! Ia! Cthulhu fhtagn.  ".chars()
-    }
-
     pub fn standard_generator() -> IaCS {
-        CodeSequence::from_chars(Self::ia)
+        let rval: CodeSequence<'static, IaBI> =
+            CodeSequence::new_from_str("Ia! Ia! Cthulhu fhtagn.  ");
+        rval
     }
 }
 
@@ -212,7 +215,7 @@ impl<P: Pin> MissionMode<P> for Ia {
 /// base iterator for the CallOfCthulhu MissionMode
 type CoCBI = Map<Iter<'static, u8>, fn(&'static u8) -> char>;
 /// CodeSequence for the CallOfCthulhu MissionMode
-type CoCCS = CodeSequence<fn() -> CoCBI, CoCBI>;
+type CoCCS = CodeSequence<'static, CoCBI>;
 
 struct CallOfCthulhu {
     generator: CoCCS,
@@ -328,12 +331,52 @@ impl ApplicationState {
             _ => None,
         }
     }
-}
 
+    fn usb_keyboard_response<P: Pin>(
+        &mut self,
+        pins: &mut MyPins<P>,
+        gpt1: &mut GPT,
+        hid: &mut HIDClass<BusAdapter>,
+        pushed_back: &mut Option<KeyboardReport>,
+        new_mode: RotaryMode,
+    ) -> KeyboardReport {
+        if self.mode != new_mode {
+            pushed_back.take();
+            let delay_reboot = self.curr::<P>().and_then(|curr| curr.maybe_deactivate(hid));
+            match delay_reboot {
+                None => {
+                    self.mode = new_mode;
+                    if let Some(curr) = self.curr::<P>() {
+                        curr.reboot();
+                        curr.one_usb_pass(&mut pins.led, &pins.switch_pin, gpt1, hid)
+                    } else {
+                        simple_kr1(0, 0)
+                    }
+                }
+                Some(kr) => kr,
+            }
+        } else {
+            match self.curr::<P>() {
+                Some(curr) => match pushed_back.take() {
+                    None => curr.one_usb_pass(&mut pins.led, &pins.switch_pin, gpt1, hid),
+                    Some(kr) => kr,
+                },
+                None => simple_kr1(0, 0),
+            }
+        }
+    }
+}
 //
 
 #[cortex_m_rt::entry]
 fn main() -> ! {
+    {
+        // Initialize the allocator BEFORE you use it
+        let start = cortex_m_rt::heap_start() as usize;
+        let size = 1024; // in bytes
+        unsafe { ALLOCATOR.init(start, size) }
+    }
+
     let env = HardwareParts::start_up(hal::Peripherals::take().unwrap());
 
     //
@@ -415,32 +458,8 @@ fn keyboard_mission3<P: Pin>(
         if device.poll(&mut [hid]) {
             let new_mode = RotaryMode::get(pins);
 
-            let keyboard_report = if app_state.mode != new_mode {
-                pushed_back.take();
-                let delay_reboot = app_state
-                    .curr::<P>()
-                    .and_then(|curr| curr.maybe_deactivate(hid));
-                match delay_reboot {
-                    None => {
-                        app_state.mode = new_mode;
-                        if let Some(curr) = app_state.curr::<P>() {
-                            curr.reboot();
-                            curr.one_usb_pass(&mut pins.led, &pins.switch_pin, gpt1, hid)
-                        } else {
-                            simple_kr1(0, 0)
-                        }
-                    }
-                    Some(kr) => kr,
-                }
-            } else {
-                match app_state.curr::<P>() {
-                    Some(curr) => match pushed_back.take() {
-                        None => curr.one_usb_pass(&mut pins.led, &pins.switch_pin, gpt1, hid),
-                        Some(kr) => kr,
-                    },
-                    None => simple_kr1(0, 0),
-                }
-            };
+            let keyboard_report =
+                app_state.usb_keyboard_response(pins, gpt1, hid, &mut pushed_back, new_mode);
 
             match hid.push_input(&keyboard_report) {
                 Ok(_) => {}
