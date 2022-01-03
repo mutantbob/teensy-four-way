@@ -63,42 +63,34 @@ pub fn translate_char(ch: char) -> Option<KeyboardReport> {
 }
 
 pub struct CodeSequence<'a> {
-    pub orig: Box<dyn 'a + Fn() -> Box<dyn 'a + Iterator<Item = char>>>,
-    pub iter: Box<dyn 'a + Iterator<Item = char>>,
+    pub base: Box<dyn 'a + Iterator<Item = char>>,
     pub prev_char: Option<char>,
     pub next_val: Option<KeyboardReport>,
 }
 
 impl<'a> CodeSequence<'a> {
-    pub fn new<F, I: 'a + Iterator<Item = char>>(orig1: F) -> CodeSequence<'a>
-    where
-        F: 'a + Fn() -> I,
-    {
-        let orig: Box<dyn 'a + Fn() -> Box<dyn 'a + Iterator<Item = char>>> =
-            Box::new(move || Box::new(orig1()));
-        let iter = orig();
+    pub fn new<I: 'a + Iterator<Item = char>>(base: I) -> CodeSequence<'a> {
         CodeSequence {
-            orig,
-            iter,
+            base: Box::new(base),
             prev_char: None,
             next_val: None,
         }
     }
 
     pub fn new_from_str(orig: &'a str) -> CodeSequence<'a> {
-        Self::new(|| orig.chars())
+        Self::new(orig.chars())
     }
 
-    pub fn generate(&mut self) -> KeyboardReport {
+    pub fn generate(&mut self) -> Option<KeyboardReport> {
         loop {
             if let Some(kr) = self.next_val.take() {
-                return kr;
+                return Some(kr);
             }
 
-            let ch = self.iter.next();
+            let ch = self.base.next();
             match ch {
                 None => {
-                    self.iter = (self.orig)();
+                    return None;
                 }
                 Some(ch) => {
                     match (self.prev_char.take(), translate_char(ch)) {
@@ -106,14 +98,14 @@ impl<'a> CodeSequence<'a> {
                             self.prev_char = Some(ch);
                             if prev_ch == ch {
                                 self.next_val = Some(code);
-                                return simple_kr1(0, 0);
+                                return Some(simple_kr1(0, 0));
                             } else {
-                                return code;
+                                return Some(code);
                             }
                         }
                         (None, Some(code)) => {
                             self.prev_char = Some(ch);
-                            return code;
+                            return Some(code);
                         }
                         (_, None) => {}
                     };
@@ -127,7 +119,7 @@ impl<'a> Iterator for CodeSequence<'a> {
     type Item = KeyboardReport;
 
     fn next(&mut self) -> Option<Self::Item> {
-        Some(self.generate())
+        self.generate()
     }
 }
 

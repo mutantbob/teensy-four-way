@@ -2,6 +2,8 @@
 #![no_main]
 #![feature(default_alloc_error_handler)]
 
+extern crate alloc;
+
 use imxrt_hal::gpio::GPIO;
 use imxrt_hal::gpt::GPT;
 use imxrt_hal::iomuxc::gpio::Pin;
@@ -16,6 +18,7 @@ use usb_device::prelude::{UsbDeviceBuilder, UsbVidPid};
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 use usbd_hid::hid_class::HIDClass;
 
+use alloc::boxed::Box;
 use alloc_cortex_m::CortexMHeap;
 use keycode_translation::{simple_kr1, CodeSequence};
 
@@ -150,18 +153,15 @@ trait MissionMode<P: Pin> {
 
 //
 
-/// CodeSequence for the Ia MissionMode
-type IaCS = CodeSequence<'static>;
-
 struct Ia {
-    generator: IaCS,
+    generator: CodeSequence<'static>,
     deactivated: bool,
 }
 
 impl Ia {
-    pub fn standard_generator() -> IaCS {
-        let rval: CodeSequence<'static> = CodeSequence::new_from_str("Ia! Ia! Cthulhu fhtagn.  ");
-        rval
+    pub fn standard_generator() -> CodeSequence<'static> {
+        let chars = "Ia! Ia! Cthulhu fhtagn.  ".chars();
+        CodeSequence::new(Box::new(chars.cycle()))
     }
 }
 
@@ -206,22 +206,19 @@ impl<P: Pin> MissionMode<P> for Ia {
 
 //
 
-/// CodeSequence for the CallOfCthulhu MissionMode
-type CoCCS = CodeSequence<'static>;
-
 struct CallOfCthulhu {
-    generator: CoCCS,
+    generator: CodeSequence<'static>,
     deactivated: bool,
 }
 
 impl CallOfCthulhu {
     fn story_text() -> impl Iterator<Item = char> {
         let orig = include_bytes!("../keycode_translation/src/call-of-cthulhu.txt");
-        orig.iter().map(|&b| b as char)
+        orig.iter().cycle().map(|&b| b as char)
     }
 
-    fn standard_generator() -> CoCCS {
-        CodeSequence::new(Self::story_text)
+    fn standard_generator() -> CodeSequence<'static> {
+        CodeSequence::new(Box::new(Self::story_text()))
     }
 }
 
