@@ -18,7 +18,7 @@ use usb_device::prelude::{UsbDeviceBuilder, UsbVidPid};
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 use usbd_hid::hid_class::HIDClass;
 
-use crate::mission_modes::{IcarusJog, MissionMode};
+use crate::mission_modes::{CallOfCthulhu, Eeeeee, Ia, IcarusJog, MissionMode};
 use alloc::boxed::Box;
 use alloc_cortex_m::CortexMHeap;
 use keycode_translation::simple_kr1;
@@ -172,6 +172,18 @@ impl ApplicationState {
         }
     }
 
+    pub fn new2() -> ApplicationState {
+        ApplicationState {
+            mode: RotaryMode::Unknown,
+            modes: [
+                Box::new(Ia::default()),
+                Box::new(CallOfCthulhu::default()),
+                Box::new(Eeeeee::default()),
+                Box::new(IcarusJog::new(0.7)),
+            ],
+        }
+    }
+
     pub fn curr(&mut self) -> Option<&mut dyn MissionMode> {
         let idx = match self.mode {
             RotaryMode::Position1 => Some(0),
@@ -320,7 +332,11 @@ fn keyboard_mission3<P: Pin>(
     hid: &mut HIDClass<BusAdapter>,
     device: &mut UsbDevice<BusAdapter>,
 ) -> ! {
-    let mut app_state = ApplicationState::new();
+    let mut app_state = if true {
+        ApplicationState::new()
+    } else {
+        ApplicationState::new2()
+    };
 
     let mut pushed_back = None;
     let mut millis_elapsed = 0;
