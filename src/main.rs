@@ -43,11 +43,12 @@ struct MyPins<SP: Pin> {
 struct HardwareParts {
     pins: MyPins<SwitchPin>,
     gpt1: GPT,
+    gpt2: GPT,
 }
 
 impl HardwareParts {
     pub fn start_up(peripherals: hal::Peripherals) -> HardwareParts {
-        let duration = core::time::Duration::from_millis(300);
+        let duration = core::time::Duration::from_millis(100);
         let logging_baud = 115_200;
         let hal::Peripherals {
             iomuxc,
@@ -56,6 +57,7 @@ impl HardwareParts {
             uart,
             mut dcdc,
             gpt1,
+            gpt2,
             ..
         } = peripherals;
 
@@ -69,7 +71,7 @@ impl HardwareParts {
 
         support::initialize_uart(logging_baud, dma, uart, &mut ccm.handle, pins.p14, pins.p15);
 
-        let gpt1 = support::rig_timer(
+        let (mut gpt1, mut clock_config) = support::rig_timer(
             duration,
             &mut dcdc,
             gpt1,
@@ -77,6 +79,14 @@ impl HardwareParts {
             &mut ccm.handle,
             ccm.perclk,
         );
+        gpt1.set_enable(true);
+
+        let mut gpt2 = support::rig_timer_2(
+            core::time::Duration::from_millis(500),
+            gpt2,
+            &mut clock_config,
+        );
+        gpt2.set_enable(true);
 
         let mut ccm = ccm.handle;
 
@@ -93,6 +103,7 @@ impl HardwareParts {
                 rotary_pin_4,
             },
             gpt1,
+            gpt2,
         }
     }
 
@@ -110,6 +121,7 @@ impl HardwareParts {
 struct HardwareParts2<'a> {
     pins: MyPins<SwitchPin>,
     gpt1: GPT,
+    gpt2: GPT,
     hid: HIDClass<'a, BusAdapter>,
     device: UsbDevice<'a, BusAdapter>,
 }
@@ -129,6 +141,7 @@ impl<'a> HardwareParts2<'a> {
         HardwareParts2 {
             pins: part1.pins,
             gpt1: part1.gpt1,
+            gpt2: part1.gpt2,
             hid,
             device,
         }
@@ -137,15 +150,14 @@ impl<'a> HardwareParts2<'a> {
 
 //
 
-trait MissionMode<P: Pin> {
+trait MissionMode {
     fn reboot(&mut self);
 
     fn one_usb_pass(
         &mut self,
         led: &mut LED,
-        switch: &GPIO<P, Input>,
-        gpt1: &mut GPT,
         hid: &mut HIDClass<BusAdapter>,
+        millis_elapsed: u32,
     ) -> KeyboardReport;
 
     fn maybe_deactivate(&mut self, hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport>;
@@ -174,7 +186,7 @@ impl Default for Ia {
     }
 }
 
-impl<P: Pin> MissionMode<P> for Ia {
+impl MissionMode for Ia {
     fn reboot(&mut self) {
         self.generator = Self::standard_generator();
     }
@@ -182,16 +194,10 @@ impl<P: Pin> MissionMode<P> for Ia {
     fn one_usb_pass(
         &mut self,
         _led: &mut LED,
-        switch: &GPIO<P, Input>,
-        _gpt1: &mut GPT,
         _hid: &mut HIDClass<BusAdapter>,
+        _millis_elapsed: u32,
     ) -> KeyboardReport {
-        let not_idle = !switch.is_set();
-        if not_idle {
-            self.generator.next().unwrap()
-        } else {
-            simple_kr1(0, 0)
-        }
+        self.generator.next().unwrap()
     }
 
     fn maybe_deactivate(&mut self, _hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport> {
@@ -231,7 +237,7 @@ impl Default for CallOfCthulhu {
     }
 }
 
-impl<P: Pin> MissionMode<P> for CallOfCthulhu {
+impl MissionMode for CallOfCthulhu {
     fn reboot(&mut self) {
         self.generator = Self::standard_generator();
     }
@@ -239,17 +245,10 @@ impl<P: Pin> MissionMode<P> for CallOfCthulhu {
     fn one_usb_pass(
         &mut self,
         _led: &mut LED,
-        switch: &GPIO<P, Input>,
-        _gpt1: &mut GPT,
         _hid: &mut HIDClass<BusAdapter>,
+        _millis_elapsed: u32,
     ) -> KeyboardReport {
-        let not_idle = !switch.is_set();
-        if not_idle {
-            self.generator.next().unwrap()
-        } else {
-            simple_kr1(0, 0)
-        }
-        //spam_keyboard(not_idle, &mut self.generator, led, hid)
+        self.generator.next().unwrap()
     }
 
     fn maybe_deactivate(&mut self, _hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport> {
@@ -269,18 +268,80 @@ struct Eeeeee {
     deactivated: bool,
 }
 
-impl<P: Pin> MissionMode<P> for Eeeeee {
+impl MissionMode for Eeeeee {
     fn reboot(&mut self) {}
 
     fn one_usb_pass(
         &mut self,
         _led: &mut LED,
-        switch: &GPIO<P, Input>,
-        _gpt1: &mut GPT,
         _hid: &mut HIDClass<BusAdapter>,
+        _millis_elapsed: u32,
     ) -> KeyboardReport {
-        let code = if !switch.is_set() { b'e' - b'a' + 4 } else { 0 };
+        let code = b'e' - b'a' + 4;
         simple_kr1(0, code)
+    }
+
+    fn maybe_deactivate(&mut self, _hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport> {
+        if self.deactivated {
+            None
+        } else {
+            self.deactivated = true;
+            Some(simple_kr1(0, 0))
+        }
+    }
+}
+
+//
+
+struct IcarusJog {
+    sprint: bool,
+    duty_cycle: f32,
+    deactivated: bool,
+    phase_millis: Option<u32>,
+}
+
+impl IcarusJog {
+    pub fn new(duty_cycle: f32) -> IcarusJog {
+        IcarusJog {
+            sprint: false,
+            duty_cycle,
+            deactivated: false,
+            phase_millis: None,
+        }
+    }
+}
+
+impl MissionMode for IcarusJog {
+    fn reboot(&mut self) {
+        self.sprint = false;
+        self.phase_millis = None;
+    }
+
+    fn one_usb_pass(
+        &mut self,
+        _led: &mut LED,
+        _hid: &mut HIDClass<BusAdapter>,
+        millis_elapsed: u32,
+    ) -> KeyboardReport {
+        let phase_millis = match self.phase_millis {
+            None => {
+                self.phase_millis = Some(millis_elapsed);
+                millis_elapsed
+            }
+            Some(val) => val,
+        };
+        let period = 6000;
+        self.sprint =
+            ((millis_elapsed - phase_millis) % period) < (period as f32 * self.duty_cycle) as u32;
+
+        //support::time_elapse(gpt1, || self.sprint = !self.sprint);
+        /*let mut status = gpt2.output_compare_status(hal::gpt::OutputCompareRegister::One);
+        if status.is_set() {
+            status.clear();
+            self.sprint = !self.sprint
+        }*/
+
+        simple_kr1(if self.sprint { 2 } else { 0 }, b'w' - b'a' + 4)
     }
 
     fn maybe_deactivate(&mut self, _hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport> {
@@ -297,47 +358,62 @@ impl<P: Pin> MissionMode<P> for Eeeeee {
 
 struct ApplicationState {
     mode: RotaryMode,
-    mode1: Ia,
-    mode2: CallOfCthulhu,
-    mode3: Eeeeee,
+    modes: [Box<dyn MissionMode>; 4],
 }
 
 impl ApplicationState {
     pub fn new() -> ApplicationState {
         ApplicationState {
             mode: RotaryMode::Unknown,
-            mode1: Ia::default(),
-            mode2: CallOfCthulhu::default(),
-            mode3: Eeeeee::default(),
+            modes: [
+                Box::new(IcarusJog::new(0.0)), //Ia::default(),
+                Box::new(IcarusJog::new(0.6)), //CallOfCthulhu::default(),
+                Box::new(IcarusJog::new(0.7)), //Eeeeee::default(),
+                Box::new(IcarusJog::new(1.0)),
+            ],
         }
     }
 
-    pub fn curr<P: Pin>(&mut self) -> Option<&mut dyn MissionMode<P>> {
-        match self.mode {
-            RotaryMode::Position1 => Some(&mut self.mode1),
-            RotaryMode::Position2 => Some(&mut self.mode2),
-            RotaryMode::Position3 => Some(&mut self.mode3),
+    pub fn curr(&mut self) -> Option<&mut dyn MissionMode> {
+        let idx = match self.mode {
+            RotaryMode::Position1 => Some(0),
+            RotaryMode::Position2 => Some(1),
+            RotaryMode::Position3 => Some(2),
+            RotaryMode::Position4 => Some(3),
             _ => None,
-        }
+        };
+        match idx {
+            None => None,
+            Some(i) => Some(self.modes[i].as_mut()),
+        };
+        idx.map(move |i| {
+            let tmp: &mut dyn MissionMode = self.modes[i].as_mut();
+            tmp
+        })
     }
 
     fn usb_keyboard_response<P: Pin>(
         &mut self,
         pins: &mut MyPins<P>,
-        gpt1: &mut GPT,
         hid: &mut HIDClass<BusAdapter>,
         pushed_back: &mut Option<KeyboardReport>,
+        millis_elapsed: u32,
         new_mode: RotaryMode,
     ) -> KeyboardReport {
+        let idle = pins.switch_pin.is_set();
+        if idle {
+            return simple_kr1(0, 0);
+        }
+
         if self.mode != new_mode {
             pushed_back.take();
-            let delay_reboot = self.curr::<P>().and_then(|curr| curr.maybe_deactivate(hid));
+            let delay_reboot = self.curr().and_then(|curr| curr.maybe_deactivate(hid));
             match delay_reboot {
                 None => {
                     self.mode = new_mode;
-                    if let Some(curr) = self.curr::<P>() {
+                    if let Some(curr) = self.curr() {
                         curr.reboot();
-                        curr.one_usb_pass(&mut pins.led, &pins.switch_pin, gpt1, hid)
+                        curr.one_usb_pass(&mut pins.led, hid, millis_elapsed)
                     } else {
                         simple_kr1(0, 0)
                     }
@@ -345,9 +421,9 @@ impl ApplicationState {
                 Some(kr) => kr,
             }
         } else {
-            match self.curr::<P>() {
+            match self.curr() {
                 Some(curr) => match pushed_back.take() {
-                    None => curr.one_usb_pass(&mut pins.led, &pins.switch_pin, gpt1, hid),
+                    None => curr.one_usb_pass(&mut pins.led, hid, millis_elapsed),
                     Some(kr) => kr,
                 },
                 None => simple_kr1(0, 0),
@@ -379,13 +455,13 @@ fn main() -> ! {
     let HardwareParts2 {
         mut pins,
         mut gpt1,
+        mut gpt2,
         mut hid,
         mut device,
     } = env;
 
     //
 
-    gpt1.set_enable(true);
     loop {
         support::poll_logger();
         if !device.poll(&mut [&mut hid]) {
@@ -401,7 +477,13 @@ fn main() -> ! {
 
     pins.led.clear();
 
-    keyboard_mission3::<teensy4_bsp::common::P8>(&mut pins, &mut gpt1, &mut hid, &mut device)
+    keyboard_mission3::<teensy4_bsp::common::P8>(
+        &mut pins,
+        &mut gpt1,
+        &mut gpt2,
+        &mut hid,
+        &mut device,
+    )
 }
 
 //
@@ -436,19 +518,28 @@ impl RotaryMode {
 fn keyboard_mission3<P: Pin>(
     pins: &mut MyPins<P>,
     gpt1: &mut GPT,
+    gpt2: &mut GPT,
     hid: &mut HIDClass<BusAdapter>,
     device: &mut UsbDevice<BusAdapter>,
 ) -> ! {
     let mut app_state = ApplicationState::new();
 
     let mut pushed_back = None;
+    let mut millis_elapsed = 0;
 
     loop {
-        if device.poll(&mut [hid]) {
+        device.poll(&mut [hid]);
+
+        {
             let new_mode = RotaryMode::get(pins);
 
-            let keyboard_report =
-                app_state.usb_keyboard_response(pins, gpt1, hid, &mut pushed_back, new_mode);
+            let keyboard_report = app_state.usb_keyboard_response(
+                pins,
+                hid,
+                &mut pushed_back,
+                millis_elapsed,
+                new_mode,
+            );
 
             match hid.push_input(&keyboard_report) {
                 Ok(_) => {}
@@ -457,6 +548,10 @@ fn keyboard_mission3<P: Pin>(
         }
 
         support::time_elapse(gpt1, || {
+            millis_elapsed += 100;
+        });
+
+        support::time_elapse(gpt2, || {
             pins.led.toggle();
         });
     }

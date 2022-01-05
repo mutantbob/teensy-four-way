@@ -9,6 +9,7 @@ pub use hal::ral;
 pub use teensy4_bsp as bsp;
 
 use crate::support::bsp::common::{P14, P15};
+use crate::support::bsp::hal::ccm::perclk::Configured;
 use crate::support::bsp::hal::dcdc::DCDC;
 use crate::support::bsp::hal::gpt::{Unclocked, GPT};
 use crate::support::bsp::hal::iomuxc;
@@ -147,25 +148,31 @@ pub fn initialize_uart(
     imxrt_uart_log::dma::init(tx, channel, Default::default()).unwrap();
 }
 
-pub fn rig_timer(
+pub fn rig_timer<'a>(
     duration: Duration,
     dcdc: &mut DCDC,
     gpt1: Unclocked,
     ccm_pll1: &mut imxrt_hal::ccm::PLL1,
-    ccm_handle: &mut imxrt_hal::ccm::Handle,
+    ccm_handle: &'a mut imxrt_hal::ccm::Handle,
     ccm_perclk: imxrt_hal::ccm::perclk::Multiplexer,
-) -> GPT {
-    let (_, ipg_hz) = ccm_pll1.set_arm_clock(hal::ccm::PLL1::ARM_HZ, ccm_handle, dcdc);
+) -> (GPT, imxrt_hal::ccm::perclk::Configured<'a>) {
+    let (_frequency, ipg_hz) = ccm_pll1.set_arm_clock(hal::ccm::PLL1::ARM_HZ, ccm_handle, dcdc);
     let mut cfg = ccm_perclk.configure(
         ccm_handle,
         hal::ccm::perclk::PODF::DIVIDE_3,
         hal::ccm::perclk::CLKSEL::IPG(ipg_hz),
     );
-    let mut gpt1 = gpt1.clock(&mut cfg);
-    gpt1.set_wait_mode_enable(true);
-    gpt1.set_mode(hal::gpt::Mode::Reset);
+    let gpt1 = rig_timer_2(duration, gpt1, &mut cfg);
+
+    (gpt1, cfg)
+}
+
+pub fn rig_timer_2(duration: Duration, gpt: Unclocked, cfg: &mut Configured<'_>) -> GPT {
+    let mut gpt = gpt.clock(cfg);
+    gpt.set_wait_mode_enable(true);
+    gpt.set_mode(hal::gpt::Mode::Reset);
 
     let gpt_ocr: hal::gpt::OutputCompareRegister = hal::gpt::OutputCompareRegister::One;
-    gpt1.set_output_compare_duration(gpt_ocr, duration);
-    gpt1
+    gpt.set_output_compare_duration(gpt_ocr, duration);
+    gpt
 }
