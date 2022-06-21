@@ -5,10 +5,16 @@
 
 extern crate alloc;
 
+use crate::dynamic_pin::DynamicPin;
+use crate::mission_modes::{CallOfCthulhu, Eeeeee, Ia, IcarusJog, MissionMode};
+use alloc::boxed::Box;
+use alloc_cortex_m::CortexMHeap;
+use embedded_hal::digital::v2::{OutputPin, PinState};
 use imxrt_hal::gpio::{Output, GPIO};
 use imxrt_hal::gpt::GPT;
 use imxrt_hal::iomuxc::gpio::Pin;
 use imxrt_usbd::full_speed::BusAdapter;
+use keycode_translation::simple_kr1;
 use teensy4_bsp as bsp;
 use teensy4_bsp::hal;
 use teensy4_panic as _;
@@ -17,12 +23,6 @@ use usb_device::device::UsbDevice;
 use usb_device::prelude::{UsbDeviceBuilder, UsbVidPid};
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 use usbd_hid::hid_class::HIDClass;
-
-use crate::dynamic_pin::DynamicPin;
-use crate::mission_modes::{CallOfCthulhu, Eeeeee, Ia, IcarusJog, MissionMode};
-use alloc::boxed::Box;
-use alloc_cortex_m::CortexMHeap;
-use keycode_translation::simple_kr1;
 
 mod dynamic_pin;
 mod mission_modes;
@@ -48,6 +48,15 @@ struct MyPins<'a, const N: usize> {
     led: MyLED,
     switch_pin: DynamicPin<'a>,
     rotary_pins: [DynamicPin<'a>; N],
+}
+
+impl<'a, const N: usize> MyPins<'a, N> {
+    /// LED is connected between 3.3V and an output pin (with a current-limiting resistor), so high means off, and low means on.
+    pub(crate) fn shine_led(&mut self, on: bool) {
+        self.led
+            .set_state(if on { PinState::Low } else { PinState::High })
+            .unwrap()
+    }
 }
 
 //
@@ -422,7 +431,7 @@ fn keyboard_mission4(
 fn core_application_loop<const N: usize, const M: usize>(
     pins: &mut MyPins<M>,
     gpt1: &mut GPT,
-    gpt2: &mut GPT,
+    _gpt2: &mut GPT,
     hid: &mut HIDClass<BusAdapter>,
     device: &mut UsbDevice<BusAdapter>,
     mut app_state: ApplicationState<N, M>,
@@ -452,6 +461,12 @@ where
                 new_mode,
             );
 
+            if keyboard_report.modifier == 0 && keyboard_report.keycodes[0] == 0 {
+                pins.shine_led(false)
+            } else {
+                pins.shine_led(true)
+            }
+
             match hid.push_input(&keyboard_report) {
                 Ok(_) => {}
                 Err(_) => pushed_back = Some(keyboard_report),
@@ -462,8 +477,8 @@ where
             millis_elapsed += 100;
         });
 
-        support::time_elapse(gpt2, || {
+        /*support::time_elapse(gpt2, || {
             pins.led.toggle();
-        });
+        });*/
     }
 }
