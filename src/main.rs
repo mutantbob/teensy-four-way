@@ -1,16 +1,16 @@
 #![no_std]
 #![no_main]
 #![feature(default_alloc_error_handler)]
+#![feature(generic_const_exprs)]
 
 extern crate alloc;
 
-use imxrt_hal::gpio::GPIO;
+use imxrt_hal::gpio::{Output, GPIO};
 use imxrt_hal::gpt::GPT;
 use imxrt_hal::iomuxc::gpio::Pin;
 use imxrt_usbd::full_speed::BusAdapter;
 use teensy4_bsp as bsp;
-use teensy4_bsp::hal::gpio::Input;
-use teensy4_bsp::{hal, LED};
+use teensy4_bsp::hal;
 use teensy4_panic as _;
 use usb_device::bus::UsbBusAllocator;
 use usb_device::device::UsbDevice;
@@ -31,20 +31,35 @@ mod support;
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
 
-type SwitchPin = teensy4_bsp::common::P8;
+//
 
-struct MyPins<'a, SP: Pin, const N: usize> {
-    led: LED,
-    switch_pin: GPIO<SP, Input>,
+pub struct ConstCheck<const CHECK: bool>;
+
+pub trait True {}
+impl True for ConstCheck<true> {}
+
+//
+
+pub type MyLED = GPIO<teensy4_bsp::common::P16, Output>;
+
+//
+
+struct MyPins<'a, const N: usize> {
+    led: MyLED,
+    switch_pin: DynamicPin<'a>,
     rotary_pins: [DynamicPin<'a>; N],
 }
 
 //
 
 struct HardwareParts<'a> {
-    pins: MyPins<'a, SwitchPin, 4>,
     gpt1: GPT,
     gpt2: GPT,
+    pins: MyPins<'a, 12>,
+}
+
+fn dynamic_pull_down<'a, P: Pin + 'a>(pin: P) -> DynamicPin<'a> {
+    DynamicPin::new(GPIO::new(support::rigged_pull_down_switch(pin)))
 }
 
 impl<'a> HardwareParts<'a> {
@@ -63,12 +78,12 @@ impl<'a> HardwareParts<'a> {
         } = peripherals;
 
         let pins = bsp::t40::into_pins(iomuxc);
-        let led = bsp::configure_led(pins.p13);
-        let switch_pin = GPIO::new(support::rigged_pull_down_switch(pins.p8));
-        let rotary_pin_1 = GPIO::new(support::rigged_pull_down_switch(pins.p9));
-        let rotary_pin_2 = GPIO::new(support::rigged_pull_down_switch(pins.p10));
-        let rotary_pin_3 = GPIO::new(support::rigged_pull_down_switch(pins.p11));
-        let rotary_pin_4 = GPIO::new(support::rigged_pull_down_switch(pins.p12));
+        let led = {
+            let mut led = GPIO::new(pins.p16);
+            led.set_fast(true);
+            led.output()
+        };
+        let switch_pin = GPIO::new(support::rigged_pull_down_switch(pins.p2));
 
         support::initialize_uart(logging_baud, dma, uart, &mut ccm.handle, pins.p14, pins.p15);
 
@@ -97,12 +112,20 @@ impl<'a> HardwareParts<'a> {
         HardwareParts {
             pins: MyPins {
                 led,
-                switch_pin,
+                switch_pin: DynamicPin::new(switch_pin),
                 rotary_pins: [
-                    DynamicPin::new(rotary_pin_1),
-                    DynamicPin::new(rotary_pin_2),
-                    DynamicPin::new(rotary_pin_3),
-                    DynamicPin::new(rotary_pin_4),
+                    dynamic_pull_down(pins.p3),
+                    dynamic_pull_down(pins.p4),
+                    dynamic_pull_down(pins.p5),
+                    dynamic_pull_down(pins.p6),
+                    dynamic_pull_down(pins.p7),
+                    dynamic_pull_down(pins.p8),
+                    dynamic_pull_down(pins.p17),
+                    dynamic_pull_down(pins.p18),
+                    dynamic_pull_down(pins.p19),
+                    dynamic_pull_down(pins.p20),
+                    dynamic_pull_down(pins.p21),
+                    dynamic_pull_down(pins.p22),
                 ],
             },
             gpt1,
@@ -110,7 +133,7 @@ impl<'a> HardwareParts<'a> {
         }
     }
 
-    pub fn stage_2(self, bus: &'a UsbBusAllocator<BusAdapter>) -> HardwareParts2<4> {
+    pub fn stage_2(self, bus: &'a UsbBusAllocator<BusAdapter>) -> HardwareParts2<12> {
         HardwareParts2::new(self, bus)
     }
 }
@@ -122,18 +145,18 @@ impl<'a> HardwareParts<'a> {
 /// appears to fail.  I am not sure why
 ///
 struct HardwareParts2<'a, const N: usize> {
-    pins: MyPins<'a, SwitchPin, N>,
+    pins: MyPins<'a, N>,
     gpt1: GPT,
     gpt2: GPT,
     hid: HIDClass<'a, BusAdapter>,
     device: UsbDevice<'a, BusAdapter>,
 }
 
-impl<'a> HardwareParts2<'a, 4> {
+impl<'a> HardwareParts2<'a, 12> {
     pub fn new(
         part1: HardwareParts<'a>,
         bus: &'a UsbBusAllocator<BusAdapter>,
-    ) -> HardwareParts2<'a, 4> {
+    ) -> HardwareParts2<'a, 12> {
         let hid = usbd_hid::hid_class::HIDClass::new(
             bus,
             //usbd_hid::descriptor::MouseReport::desc(),
@@ -156,20 +179,22 @@ impl<'a> HardwareParts2<'a, 4> {
 
 //
 
-trait ActivePredicate<P: Pin, const N: usize> {
-    fn is_active(&mut self, pins: &MyPins<P, N>) -> bool;
+trait ActivePredicate<const N: usize> {
+    fn is_active(&mut self, pins: &MyPins<N>) -> bool;
 }
 
 //
 
-struct ApplicationState<'a, P, const N: usize> {
+struct ApplicationState<'a, const N: usize, const M: usize> {
     mode: Option<usize>,
     modes: [Box<dyn MissionMode + 'a>; N],
-    on_off_switch: Box<dyn ActivePredicate<P, N> + 'a>,
+    on_off_switch: Box<dyn ActivePredicate<M> + 'a>,
 }
 
-impl<'a, P: Pin, const N: usize> ApplicationState<'a, P, N> {
-    pub fn new<AP: ActivePredicate<P, 4> + 'a>(on_off_switch: AP) -> ApplicationState<'a, P, 4> {
+impl<'a, const N: usize, const M: usize> ApplicationState<'a, N, M> {
+    pub fn icarus_jog<AP: ActivePredicate<M> + 'a>(
+        on_off_switch: AP,
+    ) -> ApplicationState<'a, 4, M> {
         ApplicationState {
             mode: None,
             modes: [
@@ -182,35 +207,48 @@ impl<'a, P: Pin, const N: usize> ApplicationState<'a, P, N> {
         }
     }
 
-    pub fn new2<AP: ActivePredicate<P, 4> + 'a>(on_off_switch: AP) -> ApplicationState<'a, P, 4> {
+    pub fn madness<AP: ActivePredicate<M> + 'a>(on_off_switch: AP) -> ApplicationState<'a, 3, M> {
         ApplicationState {
             mode: None,
             modes: [
                 Box::new(Ia::default()),
                 Box::new(CallOfCthulhu::default()),
                 Box::new(Eeeeee::default()),
-                Box::new(IcarusJog::new(0.7)),
+                //Box::new(IcarusJog::new(0.7)),
             ],
             on_off_switch: Box::new(on_off_switch),
         }
     }
 }
-impl<'a, P: Pin, const N: usize> ApplicationState<'a, P, N> {
+impl<'a, const N: usize, const M: usize> ApplicationState<'a, N, M>
+where
+    ConstCheck<{ N <= M }>: True,
+{
     pub fn curr(&mut self) -> Option<&mut dyn MissionMode> {
         match self.mode {
-            Some(idx) => Some(self.modes[idx].as_mut()),
+            Some(idx) => {
+                if idx < self.modes.len() {
+                    Some(self.modes[idx].as_mut())
+                } else {
+                    None
+                }
+            }
             None => None,
         }
     }
-
+}
+impl<'a, const N: usize, const M: usize> ApplicationState<'a, N, M> {
     fn usb_keyboard_response(
         &mut self,
-        pins: &mut MyPins<P, N>,
+        pins: &mut MyPins<M>,
         hid: &mut HIDClass<BusAdapter>,
         pushed_back: &mut Option<KeyboardReport>,
         millis_elapsed: u32,
         new_mode: Option<usize>,
-    ) -> KeyboardReport {
+    ) -> KeyboardReport
+    where
+        ConstCheck<{ N <= M }>: True,
+    {
         let idle = self.on_off_switch.is_active(pins);
 
         if idle {
@@ -289,13 +327,10 @@ fn main() -> ! {
 
     pins.led.clear();
 
-    keyboard_mission3::<teensy4_bsp::common::P8>(
-        &mut pins,
-        &mut gpt1,
-        &mut gpt2,
-        &mut hid,
-        &mut device,
-    )
+    match 4 {
+        3 => keyboard_mission3(&mut pins, &mut gpt1, &mut gpt2, &mut hid, &mut device),
+        _ => keyboard_mission4(&mut pins, &mut gpt1, &mut gpt2, &mut hid, &mut device),
+    }
 }
 
 //
@@ -305,8 +340,8 @@ fn main() -> ! {
 #[derive(Copy, Clone)]
 struct ToggleSwitchActive {}
 
-impl<P: Pin, const N: usize> ActivePredicate<P, N> for ToggleSwitchActive {
-    fn is_active(&mut self, pins: &MyPins<P, N>) -> bool {
+impl<const N: usize> ActivePredicate<N> for ToggleSwitchActive {
+    fn is_active(&mut self, pins: &MyPins<N>) -> bool {
         pins.switch_pin.is_set()
     }
 }
@@ -328,8 +363,8 @@ impl MomentarySwitchActive {
     }
 }
 
-impl<P: Pin, const N: usize> ActivePredicate<P, N> for MomentarySwitchActive {
-    fn is_active(&mut self, pins: &MyPins<P, N>) -> bool {
+impl<const N: usize> ActivePredicate<N> for MomentarySwitchActive {
+    fn is_active(&mut self, pins: &MyPins<N>) -> bool {
         let is_set = pins.switch_pin.is_set();
         if is_set != self.momentary_state {
             if is_set {
@@ -344,8 +379,8 @@ impl<P: Pin, const N: usize> ActivePredicate<P, N> for MomentarySwitchActive {
 
 //
 
-fn keyboard_mission3<P: Pin>(
-    pins: &mut MyPins<P, 4>,
+fn keyboard_mission3(
+    pins: &mut MyPins<12>,
     gpt1: &mut GPT,
     gpt2: &mut GPT,
     hid: &mut HIDClass<BusAdapter>,
@@ -353,12 +388,48 @@ fn keyboard_mission3<P: Pin>(
 ) -> ! {
     // let mut switch_active = ToggleSwitchActive{};
     let switch_active = MomentarySwitchActive::new();
-    let mut app_state = if false {
-        ApplicationState::<P, 0>::new(switch_active)
-    } else {
-        ApplicationState::<P, 0>::new2(switch_active)
-    };
 
+    core_application_loop(
+        pins,
+        gpt1,
+        gpt2,
+        hid,
+        device,
+        ApplicationState::<0, 12>::madness(switch_active),
+    )
+}
+
+fn keyboard_mission4(
+    pins: &mut MyPins<12>,
+    gpt1: &mut GPT,
+    gpt2: &mut GPT,
+    hid: &mut HIDClass<BusAdapter>,
+    device: &mut UsbDevice<BusAdapter>,
+) -> ! {
+    // let mut switch_active = ToggleSwitchActive{};
+    let switch_active = MomentarySwitchActive::new();
+
+    core_application_loop(
+        pins,
+        gpt1,
+        gpt2,
+        hid,
+        device,
+        ApplicationState::<0, 12>::icarus_jog(switch_active),
+    )
+}
+
+fn core_application_loop<const N: usize, const M: usize>(
+    pins: &mut MyPins<M>,
+    gpt1: &mut GPT,
+    gpt2: &mut GPT,
+    hid: &mut HIDClass<BusAdapter>,
+    device: &mut UsbDevice<BusAdapter>,
+    mut app_state: ApplicationState<N, M>,
+) -> !
+where
+    ConstCheck<{ N <= M }>: True,
+{
     let mut pushed_back = None;
     let mut millis_elapsed = 0;
 
