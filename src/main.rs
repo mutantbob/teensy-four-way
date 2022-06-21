@@ -152,15 +152,20 @@ impl<'a> HardwareParts2<'a> {
 
 //
 
-//
-
-struct ApplicationState {
-    mode: RotaryMode,
-    modes: [Box<dyn MissionMode>; 4],
+trait ActivePredicate<P: Pin> {
+    fn is_active(&mut self, pins: &MyPins<P>) -> bool;
 }
 
-impl ApplicationState {
-    pub fn new() -> ApplicationState {
+//
+
+struct ApplicationState<'a, P> {
+    mode: RotaryMode,
+    modes: [Box<dyn MissionMode>; 4],
+    on_off_switch: Box<dyn ActivePredicate<P> + 'a>,
+}
+
+impl<'a, P: Pin> ApplicationState<'a, P> {
+    pub fn new<AP: ActivePredicate<P> + 'a>(on_off_switch: AP) -> ApplicationState<'a, P> {
         ApplicationState {
             mode: RotaryMode::Unknown,
             modes: [
@@ -169,10 +174,11 @@ impl ApplicationState {
                 Box::new(IcarusJog::new(0.7)), //Eeeeee::default(),
                 Box::new(IcarusJog::new(1.0)),
             ],
+            on_off_switch: Box::new(on_off_switch),
         }
     }
 
-    pub fn new2() -> ApplicationState {
+    pub fn new2<AP: ActivePredicate<P> + 'a>(on_off_switch: AP) -> ApplicationState<'a, P> {
         ApplicationState {
             mode: RotaryMode::Unknown,
             modes: [
@@ -181,6 +187,7 @@ impl ApplicationState {
                 Box::new(Eeeeee::default()),
                 Box::new(IcarusJog::new(0.7)),
             ],
+            on_off_switch: Box::new(on_off_switch),
         }
     }
 
@@ -202,7 +209,7 @@ impl ApplicationState {
         })
     }
 
-    fn usb_keyboard_response<P: Pin>(
+    fn usb_keyboard_response(
         &mut self,
         pins: &mut MyPins<P>,
         hid: &mut HIDClass<BusAdapter>,
@@ -210,7 +217,8 @@ impl ApplicationState {
         millis_elapsed: u32,
         new_mode: RotaryMode,
     ) -> KeyboardReport {
-        let idle = pins.switch_pin.is_set();
+        let idle = self.on_off_switch.is_active(pins);
+
         if idle {
             return simple_kr1(0, 0);
         }
@@ -325,6 +333,48 @@ impl RotaryMode {
 
 //
 
+#[derive(Copy, Clone)]
+struct ToggleSwitchActive {}
+
+impl<P: Pin> ActivePredicate<P> for ToggleSwitchActive {
+    fn is_active(&mut self, pins: &MyPins<P>) -> bool {
+        pins.switch_pin.is_set()
+    }
+}
+
+//
+
+#[derive(Copy, Clone)]
+struct MomentarySwitchActive {
+    momentary_state: bool,
+    state: bool,
+}
+
+impl MomentarySwitchActive {
+    pub fn new() -> Self {
+        MomentarySwitchActive {
+            momentary_state: false,
+            state: false,
+        }
+    }
+}
+
+impl<P: Pin> ActivePredicate<P> for MomentarySwitchActive {
+    fn is_active(&mut self, pins: &MyPins<P>) -> bool {
+        let is_set = pins.switch_pin.is_set();
+        if is_set != self.momentary_state {
+            if is_set {
+                self.state = !self.state;
+            }
+            self.momentary_state = is_set;
+        }
+
+        self.state
+    }
+}
+
+//
+
 fn keyboard_mission3<P: Pin>(
     pins: &mut MyPins<P>,
     gpt1: &mut GPT,
@@ -332,10 +382,12 @@ fn keyboard_mission3<P: Pin>(
     hid: &mut HIDClass<BusAdapter>,
     device: &mut UsbDevice<BusAdapter>,
 ) -> ! {
+    // let mut switch_active = ToggleSwitchActive{};
+    let mut switch_active = MomentarySwitchActive::new();
     let mut app_state = if true {
-        ApplicationState::new()
+        ApplicationState::new(switch_active.clone())
     } else {
-        ApplicationState::new2()
+        ApplicationState::new2(switch_active.clone())
     };
 
     let mut pushed_back = None;
