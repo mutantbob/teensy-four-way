@@ -18,11 +18,13 @@ use usb_device::prelude::{UsbDeviceBuilder, UsbVidPid};
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 use usbd_hid::hid_class::HIDClass;
 
+use crate::dynamic_pin::DynamicPin;
 use crate::mission_modes::{CallOfCthulhu, Eeeeee, Ia, IcarusJog, MissionMode};
 use alloc::boxed::Box;
 use alloc_cortex_m::CortexMHeap;
 use keycode_translation::simple_kr1;
 
+mod dynamic_pin;
 mod mission_modes;
 mod support;
 
@@ -31,25 +33,22 @@ static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
 
 type SwitchPin = teensy4_bsp::common::P8;
 
-struct MyPins<SP: Pin> {
+struct MyPins<'a, SP: Pin, const N: usize> {
     led: LED,
     switch_pin: GPIO<SP, Input>,
-    rotary_pin_1: GPIO<teensy4_bsp::common::P9, Input>,
-    rotary_pin_2: GPIO<teensy4_bsp::common::P10, Input>,
-    rotary_pin_3: GPIO<teensy4_bsp::common::P11, Input>,
-    rotary_pin_4: GPIO<teensy4_bsp::common::P12, Input>,
+    rotary_pins: [DynamicPin<'a>; N],
 }
 
 //
 
-struct HardwareParts {
-    pins: MyPins<SwitchPin>,
+struct HardwareParts<'a> {
+    pins: MyPins<'a, SwitchPin, 4>,
     gpt1: GPT,
     gpt2: GPT,
 }
 
-impl HardwareParts {
-    pub fn start_up(peripherals: hal::Peripherals) -> HardwareParts {
+impl<'a> HardwareParts<'a> {
+    pub fn start_up(peripherals: hal::Peripherals) -> HardwareParts<'a> {
         let duration = core::time::Duration::from_millis(100);
         let logging_baud = 115_200;
         let hal::Peripherals {
@@ -99,17 +98,19 @@ impl HardwareParts {
             pins: MyPins {
                 led,
                 switch_pin,
-                rotary_pin_1,
-                rotary_pin_2,
-                rotary_pin_3,
-                rotary_pin_4,
+                rotary_pins: [
+                    DynamicPin::new(rotary_pin_1),
+                    DynamicPin::new(rotary_pin_2),
+                    DynamicPin::new(rotary_pin_3),
+                    DynamicPin::new(rotary_pin_4),
+                ],
             },
             gpt1,
             gpt2,
         }
     }
 
-    pub fn stage_2(self, bus: &UsbBusAllocator<BusAdapter>) -> HardwareParts2 {
+    pub fn stage_2(self, bus: &'a UsbBusAllocator<BusAdapter>) -> HardwareParts2<4> {
         HardwareParts2::new(self, bus)
     }
 }
@@ -120,16 +121,19 @@ impl HardwareParts {
 ///  HardwareParts is split into two initialization phases, because allocating a bus at the beginning
 /// appears to fail.  I am not sure why
 ///
-struct HardwareParts2<'a> {
-    pins: MyPins<SwitchPin>,
+struct HardwareParts2<'a, const N: usize> {
+    pins: MyPins<'a, SwitchPin, N>,
     gpt1: GPT,
     gpt2: GPT,
     hid: HIDClass<'a, BusAdapter>,
     device: UsbDevice<'a, BusAdapter>,
 }
 
-impl<'a> HardwareParts2<'a> {
-    pub fn new(part1: HardwareParts, bus: &'a UsbBusAllocator<BusAdapter>) -> HardwareParts2 {
+impl<'a> HardwareParts2<'a, 4> {
+    pub fn new(
+        part1: HardwareParts<'a>,
+        bus: &'a UsbBusAllocator<BusAdapter>,
+    ) -> HardwareParts2<'a, 4> {
         let hid = usbd_hid::hid_class::HIDClass::new(
             bus,
             //usbd_hid::descriptor::MouseReport::desc(),
@@ -152,22 +156,22 @@ impl<'a> HardwareParts2<'a> {
 
 //
 
-trait ActivePredicate<P: Pin> {
-    fn is_active(&mut self, pins: &MyPins<P>) -> bool;
+trait ActivePredicate<P: Pin, const N: usize> {
+    fn is_active(&mut self, pins: &MyPins<P, N>) -> bool;
 }
 
 //
 
-struct ApplicationState<'a, P> {
-    mode: RotaryMode,
-    modes: [Box<dyn MissionMode>; 4],
-    on_off_switch: Box<dyn ActivePredicate<P> + 'a>,
+struct ApplicationState<'a, P, const N: usize> {
+    mode: Option<usize>,
+    modes: [Box<dyn MissionMode + 'a>; N],
+    on_off_switch: Box<dyn ActivePredicate<P, N> + 'a>,
 }
 
-impl<'a, P: Pin> ApplicationState<'a, P> {
-    pub fn new<AP: ActivePredicate<P> + 'a>(on_off_switch: AP) -> ApplicationState<'a, P> {
+impl<'a, P: Pin, const N: usize> ApplicationState<'a, P, N> {
+    pub fn new<AP: ActivePredicate<P, 4> + 'a>(on_off_switch: AP) -> ApplicationState<'a, P, 4> {
         ApplicationState {
-            mode: RotaryMode::Unknown,
+            mode: None,
             modes: [
                 Box::new(IcarusJog::new(0.0)), //Ia::default(),
                 Box::new(IcarusJog::new(0.6)), //CallOfCthulhu::default(),
@@ -178,9 +182,9 @@ impl<'a, P: Pin> ApplicationState<'a, P> {
         }
     }
 
-    pub fn new2<AP: ActivePredicate<P> + 'a>(on_off_switch: AP) -> ApplicationState<'a, P> {
+    pub fn new2<AP: ActivePredicate<P, 4> + 'a>(on_off_switch: AP) -> ApplicationState<'a, P, 4> {
         ApplicationState {
-            mode: RotaryMode::Unknown,
+            mode: None,
             modes: [
                 Box::new(Ia::default()),
                 Box::new(CallOfCthulhu::default()),
@@ -190,32 +194,22 @@ impl<'a, P: Pin> ApplicationState<'a, P> {
             on_off_switch: Box::new(on_off_switch),
         }
     }
-
+}
+impl<'a, P: Pin, const N: usize> ApplicationState<'a, P, N> {
     pub fn curr(&mut self) -> Option<&mut dyn MissionMode> {
-        let idx = match self.mode {
-            RotaryMode::Position1 => Some(0),
-            RotaryMode::Position2 => Some(1),
-            RotaryMode::Position3 => Some(2),
-            RotaryMode::Position4 => Some(3),
-            _ => None,
-        };
-        match idx {
+        match self.mode {
+            Some(idx) => Some(self.modes[idx].as_mut()),
             None => None,
-            Some(i) => Some(self.modes[i].as_mut()),
-        };
-        idx.map(move |i| {
-            let tmp: &mut dyn MissionMode = self.modes[i].as_mut();
-            tmp
-        })
+        }
     }
 
     fn usb_keyboard_response(
         &mut self,
-        pins: &mut MyPins<P>,
+        pins: &mut MyPins<P, N>,
         hid: &mut HIDClass<BusAdapter>,
         pushed_back: &mut Option<KeyboardReport>,
         millis_elapsed: u32,
-        new_mode: RotaryMode,
+        new_mode: Option<usize>,
     ) -> KeyboardReport {
         let idle = self.on_off_switch.is_active(pins);
 
@@ -306,38 +300,13 @@ fn main() -> ! {
 
 //
 
-#[derive(Copy, Clone, PartialEq)]
-enum RotaryMode {
-    Position1,
-    Position2,
-    Position3,
-    Position4,
-    Unknown,
-}
-
-impl RotaryMode {
-    pub fn get<P: Pin>(pins: &MyPins<P>) -> RotaryMode {
-        if !pins.rotary_pin_1.is_set() {
-            RotaryMode::Position1
-        } else if !pins.rotary_pin_2.is_set() {
-            RotaryMode::Position2
-        } else if !pins.rotary_pin_3.is_set() {
-            RotaryMode::Position3
-        } else if !pins.rotary_pin_4.is_set() {
-            RotaryMode::Position4
-        } else {
-            RotaryMode::Unknown
-        }
-    }
-}
-
 //
 
 #[derive(Copy, Clone)]
 struct ToggleSwitchActive {}
 
-impl<P: Pin> ActivePredicate<P> for ToggleSwitchActive {
-    fn is_active(&mut self, pins: &MyPins<P>) -> bool {
+impl<P: Pin, const N: usize> ActivePredicate<P, N> for ToggleSwitchActive {
+    fn is_active(&mut self, pins: &MyPins<P, N>) -> bool {
         pins.switch_pin.is_set()
     }
 }
@@ -359,8 +328,8 @@ impl MomentarySwitchActive {
     }
 }
 
-impl<P: Pin> ActivePredicate<P> for MomentarySwitchActive {
-    fn is_active(&mut self, pins: &MyPins<P>) -> bool {
+impl<P: Pin, const N: usize> ActivePredicate<P, N> for MomentarySwitchActive {
+    fn is_active(&mut self, pins: &MyPins<P, N>) -> bool {
         let is_set = pins.switch_pin.is_set();
         if is_set != self.momentary_state {
             if is_set {
@@ -376,18 +345,18 @@ impl<P: Pin> ActivePredicate<P> for MomentarySwitchActive {
 //
 
 fn keyboard_mission3<P: Pin>(
-    pins: &mut MyPins<P>,
+    pins: &mut MyPins<P, 4>,
     gpt1: &mut GPT,
     gpt2: &mut GPT,
     hid: &mut HIDClass<BusAdapter>,
     device: &mut UsbDevice<BusAdapter>,
 ) -> ! {
     // let mut switch_active = ToggleSwitchActive{};
-    let mut switch_active = MomentarySwitchActive::new();
-    let mut app_state = if true {
-        ApplicationState::new(switch_active.clone())
+    let switch_active = MomentarySwitchActive::new();
+    let mut app_state = if false {
+        ApplicationState::<P, 0>::new(switch_active)
     } else {
-        ApplicationState::new2(switch_active.clone())
+        ApplicationState::<P, 0>::new2(switch_active)
     };
 
     let mut pushed_back = None;
@@ -397,7 +366,12 @@ fn keyboard_mission3<P: Pin>(
         device.poll(&mut [hid]);
 
         {
-            let new_mode = RotaryMode::get(pins);
+            let new_mode = pins
+                .rotary_pins
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, pin)| if !pin.is_set() { Some(idx) } else { None })
+                .next();
 
             let keyboard_report = app_state.usb_keyboard_response(
                 pins,
