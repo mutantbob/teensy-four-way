@@ -132,8 +132,8 @@ impl MissionMode for Eeeeee {
         _hid: &mut HIDClass<BusAdapter>,
         _millis_elapsed: u32,
     ) -> KeyboardReport {
-        let code = b'e' - b'a' + 4;
-        simple_kr1(0, code)
+        const CODE: u8 = b'e' - b'a' + 4;
+        simple_kr1(0, CODE)
     }
 
     fn maybe_deactivate(&mut self, _hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport> {
@@ -197,6 +197,50 @@ impl MissionMode for IcarusJog {
         }*/
 
         simple_kr1(if self.sprint { 2 } else { 0 }, b'w' - b'a' + 4)
+    }
+
+    fn maybe_deactivate(&mut self, _hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport> {
+        if self.deactivated {
+            None
+        } else {
+            self.deactivated = true;
+            Some(simple_kr1(0, 0))
+        }
+    }
+}
+
+//
+
+pub struct TestKey {
+    key_code: KeyboardReport,
+    deactivated: bool,
+}
+
+impl TestKey {
+    pub fn box_new(ch: char) -> Box<TestKey> {
+        Box::new(Self::new(ch))
+    }
+
+    pub fn new(ch: char) -> TestKey {
+        TestKey {
+            key_code: keycode_translation::translate_char(ch).unwrap(),
+            deactivated: false,
+        }
+    }
+}
+
+impl MissionMode for TestKey {
+    fn reboot(&mut self) {
+        // nothing to do
+    }
+
+    fn one_usb_pass(
+        &mut self,
+        _led: &mut MyLED,
+        _hid: &mut HIDClass<BusAdapter>,
+        _millis_elapsed: u32,
+    ) -> KeyboardReport {
+        self.key_code.clone()
     }
 
     fn maybe_deactivate(&mut self, _hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport> {

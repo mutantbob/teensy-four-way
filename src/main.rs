@@ -15,6 +15,7 @@ use imxrt_hal::gpt::GPT;
 use imxrt_hal::iomuxc::gpio::Pin;
 use imxrt_usbd::full_speed::BusAdapter;
 use keycode_translation::simple_kr1;
+use mission_modes::TestKey;
 use teensy4_bsp as bsp;
 use teensy4_bsp::hal;
 use teensy4_panic as _;
@@ -72,6 +73,8 @@ fn dynamic_pull_down<'a, P: Pin + 'a>(pin: P) -> DynamicPin<'a> {
 }
 
 impl<'a> HardwareParts<'a> {
+    /// pin 3 is the switch.
+    /// pin 16 is the LED.
     pub fn start_up(peripherals: hal::Peripherals) -> HardwareParts<'a> {
         let duration = core::time::Duration::from_millis(100);
         let logging_baud = 115_200;
@@ -92,7 +95,7 @@ impl<'a> HardwareParts<'a> {
             led.set_fast(true);
             led.output()
         };
-        let switch_pin = GPIO::new(support::rigged_pull_down_switch(pins.p2));
+        let switch_pin = GPIO::new(support::rigged_pull_down_switch(pins.p3));
 
         support::initialize_uart(logging_baud, dma, uart, &mut ccm.handle, pins.p14, pins.p15);
 
@@ -123,12 +126,12 @@ impl<'a> HardwareParts<'a> {
                 led,
                 switch_pin: DynamicPin::new(switch_pin),
                 rotary_pins: [
-                    dynamic_pull_down(pins.p3),
                     dynamic_pull_down(pins.p4),
                     dynamic_pull_down(pins.p5),
                     dynamic_pull_down(pins.p6),
                     dynamic_pull_down(pins.p7),
                     dynamic_pull_down(pins.p8),
+                    dynamic_pull_down(pins.p9),
                     dynamic_pull_down(pins.p17),
                     dynamic_pull_down(pins.p18),
                     dynamic_pull_down(pins.p19),
@@ -228,7 +231,31 @@ impl<'a, const N: usize, const M: usize> ApplicationState<'a, N, M> {
             on_off_switch: Box::new(on_off_switch),
         }
     }
+
+    pub fn test_twelve<AP: ActivePredicate<M> + 'a>(
+        on_off_switch: AP,
+    ) -> ApplicationState<'a, 12, M> {
+        ApplicationState {
+            mode: None,
+            modes: [
+                TestKey::box_new('1'),
+                TestKey::box_new('2'),
+                TestKey::box_new('3'),
+                TestKey::box_new('4'),
+                TestKey::box_new('5'),
+                TestKey::box_new('6'),
+                TestKey::box_new('7'),
+                TestKey::box_new('8'),
+                TestKey::box_new('9'),
+                TestKey::box_new('a'),
+                TestKey::box_new('b'),
+                TestKey::box_new('c'),
+            ],
+            on_off_switch: Box::new(on_off_switch),
+        }
+    }
 }
+
 impl<'a, const N: usize, const M: usize> ApplicationState<'a, N, M>
 where
     ConstCheck<{ N <= M }>: True,
@@ -246,6 +273,7 @@ where
         }
     }
 }
+
 impl<'a, const N: usize, const M: usize> ApplicationState<'a, N, M> {
     fn usb_keyboard_response(
         &mut self,
@@ -336,9 +364,10 @@ fn main() -> ! {
 
     pins.led.clear();
 
-    match 4 {
+    match 5 {
         3 => keyboard_mission3(&mut pins, &mut gpt1, &mut gpt2, &mut hid, &mut device),
-        _ => keyboard_mission4(&mut pins, &mut gpt1, &mut gpt2, &mut hid, &mut device),
+        4 => keyboard_mission4(&mut pins, &mut gpt1, &mut gpt2, &mut hid, &mut device),
+        _ => keyboard_mission5(&mut pins, &mut gpt1, &mut gpt2, &mut hid, &mut device),
     }
 }
 
@@ -395,8 +424,7 @@ fn keyboard_mission3(
     hid: &mut HIDClass<BusAdapter>,
     device: &mut UsbDevice<BusAdapter>,
 ) -> ! {
-    // let mut switch_active = ToggleSwitchActive{};
-    let switch_active = MomentarySwitchActive::new();
+    let switch_active = switch_active();
 
     core_application_loop(
         pins,
@@ -406,6 +434,12 @@ fn keyboard_mission3(
         device,
         ApplicationState::<0, 12>::madness(switch_active),
     )
+}
+
+fn switch_active() -> impl ActivePredicate<12> {
+    // let mut switch_active = ToggleSwitchActive{};
+    let switch_active = MomentarySwitchActive::new();
+    switch_active
 }
 
 fn keyboard_mission4(
@@ -425,6 +459,26 @@ fn keyboard_mission4(
         hid,
         device,
         ApplicationState::<0, 12>::icarus_jog(switch_active),
+    )
+}
+
+fn keyboard_mission5(
+    pins: &mut MyPins<12>,
+    gpt1: &mut GPT,
+    gpt2: &mut GPT,
+    hid: &mut HIDClass<BusAdapter>,
+    device: &mut UsbDevice<BusAdapter>,
+) -> ! {
+    // let mut switch_active = ToggleSwitchActive{};
+    let switch_active = MomentarySwitchActive::new();
+
+    core_application_loop(
+        pins,
+        gpt1,
+        gpt2,
+        hid,
+        device,
+        ApplicationState::<0, 12>::test_twelve(switch_active),
     )
 }
 
