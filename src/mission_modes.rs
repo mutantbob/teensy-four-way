@@ -1,21 +1,13 @@
-use crate::LED3VAndSignal;
 use alloc::boxed::Box;
-use imxrt_usbd::full_speed::BusAdapter;
 use keycode_translation::{simple_kr1, CodeSequence};
 use usbd_hid::descriptor::KeyboardReport;
-use usbd_hid::hid_class::HIDClass;
 
 pub trait MissionMode {
     fn reboot(&mut self);
 
-    fn one_usb_pass(
-        &mut self,
-        led: &mut LED3VAndSignal,
-        hid: &mut HIDClass<BusAdapter>,
-        millis_elapsed: u32,
-    ) -> KeyboardReport;
+    fn one_usb_pass(&mut self, millis_elapsed: u32) -> KeyboardReport;
 
-    fn maybe_deactivate(&mut self, hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport>;
+    fn maybe_deactivate(&mut self) -> Option<KeyboardReport>;
 }
 
 //
@@ -46,16 +38,11 @@ impl MissionMode for Ia {
         self.generator = Self::standard_generator();
     }
 
-    fn one_usb_pass(
-        &mut self,
-        _led: &mut LED3VAndSignal,
-        _hid: &mut HIDClass<BusAdapter>,
-        _millis_elapsed: u32,
-    ) -> KeyboardReport {
+    fn one_usb_pass(&mut self, _millis_elapsed: u32) -> KeyboardReport {
         self.generator.next().unwrap()
     }
 
-    fn maybe_deactivate(&mut self, _hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport> {
+    fn maybe_deactivate(&mut self) -> Option<KeyboardReport> {
         if self.deactivated {
             None
         } else {
@@ -97,16 +84,11 @@ impl MissionMode for CallOfCthulhu {
         self.generator = Self::standard_generator();
     }
 
-    fn one_usb_pass(
-        &mut self,
-        _led: &mut LED3VAndSignal,
-        _hid: &mut HIDClass<BusAdapter>,
-        _millis_elapsed: u32,
-    ) -> KeyboardReport {
+    fn one_usb_pass(&mut self, _millis_elapsed: u32) -> KeyboardReport {
         self.generator.next().unwrap()
     }
 
-    fn maybe_deactivate(&mut self, _hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport> {
+    fn maybe_deactivate(&mut self) -> Option<KeyboardReport> {
         if self.deactivated {
             None
         } else {
@@ -126,17 +108,12 @@ pub struct Eeeeee {
 impl MissionMode for Eeeeee {
     fn reboot(&mut self) {}
 
-    fn one_usb_pass(
-        &mut self,
-        _led: &mut LED3VAndSignal,
-        _hid: &mut HIDClass<BusAdapter>,
-        _millis_elapsed: u32,
-    ) -> KeyboardReport {
+    fn one_usb_pass(&mut self, _millis_elapsed: u32) -> KeyboardReport {
         const CODE: u8 = b'e' - b'a' + 4;
         simple_kr1(0, CODE)
     }
 
-    fn maybe_deactivate(&mut self, _hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport> {
+    fn maybe_deactivate(&mut self) -> Option<KeyboardReport> {
         if self.deactivated {
             None
         } else {
@@ -172,12 +149,7 @@ impl MissionMode for IcarusJog {
         self.phase_millis = None;
     }
 
-    fn one_usb_pass(
-        &mut self,
-        _led: &mut LED3VAndSignal,
-        _hid: &mut HIDClass<BusAdapter>,
-        millis_elapsed: u32,
-    ) -> KeyboardReport {
+    fn one_usb_pass(&mut self, millis_elapsed: u32) -> KeyboardReport {
         let phase_millis = match self.phase_millis {
             None => {
                 self.phase_millis = Some(millis_elapsed);
@@ -199,7 +171,7 @@ impl MissionMode for IcarusJog {
         simple_kr1(if self.sprint { 2 } else { 0 }, b'w' - b'a' + 4)
     }
 
-    fn maybe_deactivate(&mut self, _hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport> {
+    fn maybe_deactivate(&mut self) -> Option<KeyboardReport> {
         if self.deactivated {
             None
         } else {
@@ -234,16 +206,11 @@ impl MissionMode for TestKey {
         // nothing to do
     }
 
-    fn one_usb_pass(
-        &mut self,
-        _led: &mut LED3VAndSignal,
-        _hid: &mut HIDClass<BusAdapter>,
-        _millis_elapsed: u32,
-    ) -> KeyboardReport {
-        self.key_code.clone()
+    fn one_usb_pass(&mut self, _millis_elapsed: u32) -> KeyboardReport {
+        self.key_code
     }
 
-    fn maybe_deactivate(&mut self, _hid: &mut HIDClass<BusAdapter>) -> Option<KeyboardReport> {
+    fn maybe_deactivate(&mut self) -> Option<KeyboardReport> {
         if self.deactivated {
             None
         } else {

@@ -283,7 +283,6 @@ impl<'a, const N: usize, const M: usize> ApplicationState<'a, N, M> {
     fn usb_keyboard_response(
         &mut self,
         pins: &mut MyPins<M>,
-        hid: &mut HIDClass<BusAdapter>,
         pushed_back: &mut Option<KeyboardReport>,
         millis_elapsed: u32,
         new_mode: Option<usize>,
@@ -299,13 +298,13 @@ impl<'a, const N: usize, const M: usize> ApplicationState<'a, N, M> {
 
         if self.mode != new_mode {
             pushed_back.take();
-            let delay_reboot = self.curr().and_then(|curr| curr.maybe_deactivate(hid));
+            let delay_reboot = self.curr().and_then(|curr| curr.maybe_deactivate());
             match delay_reboot {
                 None => {
                     self.mode = new_mode;
                     if let Some(curr) = self.curr() {
                         curr.reboot();
-                        curr.one_usb_pass(&mut pins.led, hid, millis_elapsed)
+                        curr.one_usb_pass(millis_elapsed)
                     } else {
                         simple_kr1(0, 0)
                     }
@@ -315,7 +314,7 @@ impl<'a, const N: usize, const M: usize> ApplicationState<'a, N, M> {
         } else {
             match self.curr() {
                 Some(curr) => match pushed_back.take() {
-                    None => curr.one_usb_pass(&mut pins.led, hid, millis_elapsed),
+                    None => curr.one_usb_pass(millis_elapsed),
                     Some(kr) => kr,
                 },
                 None => simple_kr1(0, 0),
@@ -515,7 +514,7 @@ where
                 .next();
 
             let keyboard_report =
-                app_state.usb_keyboard_response(pins, hid, &mut pushed_back, millis(), new_mode);
+                app_state.usb_keyboard_response(pins, &mut pushed_back, millis(), new_mode);
 
             if keyboard_report.modifier == 0 && keyboard_report.keycodes[0] == 0 {
                 pins.shine_led(false)
