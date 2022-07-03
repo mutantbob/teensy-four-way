@@ -5,8 +5,10 @@
 
 extern crate alloc;
 
+use crate::debouncer::Debouncer;
 use crate::dynamic_pin::DynamicPin;
 use crate::mission_modes::{CallOfCthulhu, Eeeeee, Ia, IcarusJog, MissionMode};
+use crate::timekeeper::{incr_timestamp, millis};
 use alloc::boxed::Box;
 use alloc_cortex_m::CortexMHeap;
 use embedded_hal::digital::v2::{OutputPin, PinState};
@@ -25,9 +27,11 @@ use usb_device::prelude::{UsbDeviceBuilder, UsbVidPid};
 use usbd_hid::descriptor::{KeyboardReport, SerializedDescriptor};
 use usbd_hid::hid_class::HIDClass;
 
+mod debouncer;
 mod dynamic_pin;
 mod mission_modes;
 mod support;
+mod timekeeper;
 
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
@@ -72,11 +76,13 @@ fn dynamic_pull_down<'a, P: Pin + 'a>(pin: P) -> DynamicPin<'a> {
     DynamicPin::new(GPIO::new(support::rigged_pull_down_switch(pin)))
 }
 
+const CLOCK_RESOLUTION: u32 = 5;
+
 impl<'a> HardwareParts<'a> {
     /// pin 3 is the switch.
     /// pin 16 is the LED.
     pub fn start_up(peripherals: hal::Peripherals) -> HardwareParts<'a> {
-        let duration = core::time::Duration::from_millis(100);
+        let duration = core::time::Duration::from_millis(CLOCK_RESOLUTION as u64);
         let logging_baud = 115_200;
         let hal::Peripherals {
             iomuxc,
@@ -386,10 +392,11 @@ impl<const N: usize> ActivePredicate<N> for ToggleSwitchActive {
 
 //
 
-#[derive(Copy, Clone)]
+// #[derive(Copy, Clone)]
 struct MomentarySwitchActive {
     momentary_state: bool,
     state: bool,
+    debouncer: Debouncer,
 }
 
 impl MomentarySwitchActive {
@@ -397,13 +404,16 @@ impl MomentarySwitchActive {
         MomentarySwitchActive {
             momentary_state: false,
             state: false,
+            debouncer: Debouncer::new(50),
         }
     }
 }
 
 impl<const N: usize> ActivePredicate<N> for MomentarySwitchActive {
     fn is_active(&mut self, pins: &MyPins<N>) -> bool {
-        let is_set = pins.switch_pin.is_set();
+        let is_set = self
+            .debouncer
+            .debounced_value(pins.switch_pin.is_set(), millis());
         if is_set != self.momentary_state {
             if is_set {
                 self.state = !self.state;
@@ -494,7 +504,7 @@ where
     ConstCheck<{ N <= M }>: True,
 {
     let mut pushed_back = None;
-    let mut millis_elapsed = 0;
+    //    let mut millis_elapsed = 0;
 
     loop {
         device.poll(&mut [hid]);
@@ -507,13 +517,8 @@ where
                 .filter_map(|(idx, pin)| if !pin.is_set() { Some(idx) } else { None })
                 .next();
 
-            let keyboard_report = app_state.usb_keyboard_response(
-                pins,
-                hid,
-                &mut pushed_back,
-                millis_elapsed,
-                new_mode,
-            );
+            let keyboard_report =
+                app_state.usb_keyboard_response(pins, hid, &mut pushed_back, millis(), new_mode);
 
             if keyboard_report.modifier == 0 && keyboard_report.keycodes[0] == 0 {
                 pins.shine_led(false)
@@ -528,7 +533,7 @@ where
         }
 
         support::time_elapse(gpt1, || {
-            millis_elapsed += 100;
+            incr_timestamp(CLOCK_RESOLUTION);
         });
 
         /*support::time_elapse(gpt2, || {

@@ -47,6 +47,7 @@ pub fn translate_char(ch: char) -> Option<KeyboardReport> {
             Some(simple_kr1(0, code))
         }
         '-' => Some(simple_kr1(0, 0x2d)),
+        '+' => Some(simple_kr1(2, 46)),
         'é' | 'ë' => {
             Some(simple_kr1(0, 8)) // XXX sloppy
         }
