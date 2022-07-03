@@ -1,4 +1,4 @@
-use crate::MyLED;
+use crate::LED3VAndSignal;
 use alloc::boxed::Box;
 use imxrt_usbd::full_speed::BusAdapter;
 use keycode_translation::{simple_kr1, CodeSequence};
@@ -10,7 +10,7 @@ pub trait MissionMode {
 
     fn one_usb_pass(
         &mut self,
-        led: &mut MyLED,
+        led: &mut LED3VAndSignal,
         hid: &mut HIDClass<BusAdapter>,
         millis_elapsed: u32,
     ) -> KeyboardReport;
@@ -48,7 +48,7 @@ impl MissionMode for Ia {
 
     fn one_usb_pass(
         &mut self,
-        _led: &mut MyLED,
+        _led: &mut LED3VAndSignal,
         _hid: &mut HIDClass<BusAdapter>,
         _millis_elapsed: u32,
     ) -> KeyboardReport {
@@ -99,7 +99,7 @@ impl MissionMode for CallOfCthulhu {
 
     fn one_usb_pass(
         &mut self,
-        _led: &mut MyLED,
+        _led: &mut LED3VAndSignal,
         _hid: &mut HIDClass<BusAdapter>,
         _millis_elapsed: u32,
     ) -> KeyboardReport {
@@ -128,7 +128,7 @@ impl MissionMode for Eeeeee {
 
     fn one_usb_pass(
         &mut self,
-        _led: &mut MyLED,
+        _led: &mut LED3VAndSignal,
         _hid: &mut HIDClass<BusAdapter>,
         _millis_elapsed: u32,
     ) -> KeyboardReport {
@@ -174,7 +174,7 @@ impl MissionMode for IcarusJog {
 
     fn one_usb_pass(
         &mut self,
-        _led: &mut MyLED,
+        _led: &mut LED3VAndSignal,
         _hid: &mut HIDClass<BusAdapter>,
         millis_elapsed: u32,
     ) -> KeyboardReport {
@@ -236,7 +236,7 @@ impl MissionMode for TestKey {
 
     fn one_usb_pass(
         &mut self,
-        _led: &mut MyLED,
+        _led: &mut LED3VAndSignal,
         _hid: &mut HIDClass<BusAdapter>,
         _millis_elapsed: u32,
     ) -> KeyboardReport {

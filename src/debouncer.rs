@@ -6,10 +6,10 @@ pub struct Debouncer {
 }
 
 impl Debouncer {
-    pub fn new(ticks_for_stability: u32) -> Self {
+    pub fn new(initial_state: bool, ticks_for_stability: u32) -> Self {
         Debouncer {
-            stabilized_state: false,
-            curr_state: false,
+            stabilized_state: initial_state,
+            curr_state: initial_state,
             timestamp_last_transition: 0,
             ticks_for_stability,
         }

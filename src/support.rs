@@ -112,7 +112,7 @@ pub fn time_elapse(gpt: &mut hal::gpt::GPT, func: impl FnOnce()) {
     }
 }
 
-fn rig_pull_down_switch<I: iomuxc::IOMUX>(switch_pin: &mut I) {
+fn rig_pull_up_switch<I: iomuxc::IOMUX>(switch_pin: &mut I) {
     let cfg = teensy4_bsp::hal::iomuxc::Config::zero()
         .set_hysteresis(Hysteresis::Enabled)
         .set_pull_keep(PullKeep::Enabled)
@@ -122,8 +122,8 @@ fn rig_pull_down_switch<I: iomuxc::IOMUX>(switch_pin: &mut I) {
     iomuxc::configure(switch_pin, cfg);
 }
 
-pub fn rigged_pull_down_switch<I: iomuxc::IOMUX>(mut switch_pin: I) -> I {
-    rig_pull_down_switch(&mut switch_pin);
+pub fn rigged_pull_up_switch<I: iomuxc::IOMUX>(mut switch_pin: I) -> I {
+    rig_pull_up_switch(&mut switch_pin);
     switch_pin
 }
 

@@ -9,9 +9,9 @@ use crate::debouncer::Debouncer;
 use crate::dynamic_pin::DynamicPin;
 use crate::mission_modes::{CallOfCthulhu, Eeeeee, Ia, IcarusJog, MissionMode};
 use crate::timekeeper::{incr_timestamp, millis};
+use crate::wiring::{LED3VAndSignal, SwitchPullUp};
 use alloc::boxed::Box;
 use alloc_cortex_m::CortexMHeap;
-use embedded_hal::digital::v2::{OutputPin, PinState};
 use imxrt_hal::gpio::{Output, GPIO};
 use imxrt_hal::gpt::GPT;
 use imxrt_hal::iomuxc::gpio::Pin;
@@ -32,6 +32,7 @@ mod dynamic_pin;
 mod mission_modes;
 mod support;
 mod timekeeper;
+mod wiring;
 
 #[global_allocator]
 static ALLOCATOR: CortexMHeap = CortexMHeap::empty();
@@ -50,17 +51,15 @@ pub type MyLED = GPIO<teensy4_bsp::common::P16, Output>;
 //
 
 struct MyPins<'a, const N: usize> {
-    led: MyLED,
-    switch_pin: DynamicPin<'a>,
+    led: LED3VAndSignal,
+    switch_pin: SwitchPullUp<'a>,
     rotary_pins: [DynamicPin<'a>; N],
 }
 
 impl<'a, const N: usize> MyPins<'a, N> {
     /// LED is connected between 3.3V and an output pin (with a current-limiting resistor), so high means off, and low means on.
     pub(crate) fn shine_led(&mut self, on: bool) {
-        self.led
-            .set_state(if on { PinState::Low } else { PinState::High })
-            .unwrap()
+        self.led.shine(on)
     }
 }
 
@@ -72,8 +71,8 @@ struct HardwareParts<'a> {
     pins: MyPins<'a, 12>,
 }
 
-fn dynamic_pull_down<'a, P: Pin + 'a>(pin: P) -> DynamicPin<'a> {
-    DynamicPin::new(GPIO::new(support::rigged_pull_down_switch(pin)))
+fn dynamic_pull_up<'a, P: Pin + 'a>(pin: P) -> DynamicPin<'a> {
+    DynamicPin::new(GPIO::new(support::rigged_pull_up_switch(pin)))
 }
 
 const CLOCK_RESOLUTION: u32 = 5;
@@ -101,7 +100,7 @@ impl<'a> HardwareParts<'a> {
             led.set_fast(true);
             led.output()
         };
-        let switch_pin = GPIO::new(support::rigged_pull_down_switch(pins.p3));
+        let switch_pin = dynamic_pull_up(pins.p3);
 
         support::initialize_uart(logging_baud, dma, uart, &mut ccm.handle, pins.p14, pins.p15);
 
@@ -129,21 +128,21 @@ impl<'a> HardwareParts<'a> {
 
         HardwareParts {
             pins: MyPins {
-                led,
-                switch_pin: DynamicPin::new(switch_pin),
+                led: LED3VAndSignal::new(led),
+                switch_pin: SwitchPullUp::new(switch_pin),
                 rotary_pins: [
-                    dynamic_pull_down(pins.p4),
-                    dynamic_pull_down(pins.p5),
-                    dynamic_pull_down(pins.p6),
-                    dynamic_pull_down(pins.p7),
-                    dynamic_pull_down(pins.p8),
-                    dynamic_pull_down(pins.p9),
-                    dynamic_pull_down(pins.p17),
-                    dynamic_pull_down(pins.p18),
-                    dynamic_pull_down(pins.p19),
-                    dynamic_pull_down(pins.p20),
-                    dynamic_pull_down(pins.p21),
-                    dynamic_pull_down(pins.p22),
+                    dynamic_pull_up(pins.p4),
+                    dynamic_pull_up(pins.p5),
+                    dynamic_pull_up(pins.p6),
+                    dynamic_pull_up(pins.p7),
+                    dynamic_pull_up(pins.p8),
+                    dynamic_pull_up(pins.p9),
+                    dynamic_pull_up(pins.p17),
+                    dynamic_pull_up(pins.p18),
+                    dynamic_pull_up(pins.p19),
+                    dynamic_pull_up(pins.p20),
+                    dynamic_pull_up(pins.p21),
+                    dynamic_pull_up(pins.p22),
                 ],
             },
             gpt1,
@@ -292,7 +291,7 @@ impl<'a, const N: usize, const M: usize> ApplicationState<'a, N, M> {
     where
         ConstCheck<{ N <= M }>: True,
     {
-        let idle = self.on_off_switch.is_active(pins);
+        let idle = !self.on_off_switch.is_active(pins);
 
         if idle {
             return simple_kr1(0, 0);
@@ -368,7 +367,7 @@ fn main() -> ! {
 
     device.bus().configure();
 
-    pins.led.clear();
+    pins.led.shine(false);
 
     match 5 {
         3 => keyboard_mission3(&mut pins, &mut gpt1, &mut gpt2, &mut hid, &mut device),
@@ -386,7 +385,7 @@ struct ToggleSwitchActive {}
 
 impl<const N: usize> ActivePredicate<N> for ToggleSwitchActive {
     fn is_active(&mut self, pins: &MyPins<N>) -> bool {
-        pins.switch_pin.is_set()
+        pins.switch_pin.closed()
     }
 }
 
@@ -400,11 +399,12 @@ struct MomentarySwitchActive {
 }
 
 impl MomentarySwitchActive {
-    pub fn new() -> Self {
+    pub fn new<const N: usize>(pins: &MyPins<N>) -> Self {
+        let momentary_state = pins.switch_pin.closed();
         MomentarySwitchActive {
-            momentary_state: false,
+            momentary_state,
             state: false,
-            debouncer: Debouncer::new(50),
+            debouncer: Debouncer::new(momentary_state, 50),
         }
     }
 }
@@ -413,7 +413,7 @@ impl<const N: usize> ActivePredicate<N> for MomentarySwitchActive {
     fn is_active(&mut self, pins: &MyPins<N>) -> bool {
         let is_set = self
             .debouncer
-            .debounced_value(pins.switch_pin.is_set(), millis());
+            .debounced_value(pins.switch_pin.closed(), millis());
         if is_set != self.momentary_state {
             if is_set {
                 self.state = !self.state;
@@ -434,7 +434,7 @@ fn keyboard_mission3(
     hid: &mut HIDClass<BusAdapter>,
     device: &mut UsbDevice<BusAdapter>,
 ) -> ! {
-    let switch_active = switch_active();
+    let switch_active = switch_active(pins);
 
     core_application_loop(
         pins,
@@ -446,10 +446,9 @@ fn keyboard_mission3(
     )
 }
 
-fn switch_active() -> impl ActivePredicate<12> {
+fn switch_active<const N: usize>(pins: &mut MyPins<N>) -> impl ActivePredicate<12> {
     // let mut switch_active = ToggleSwitchActive{};
-    let switch_active = MomentarySwitchActive::new();
-    switch_active
+    MomentarySwitchActive::new(pins)
 }
 
 fn keyboard_mission4(
@@ -459,8 +458,7 @@ fn keyboard_mission4(
     hid: &mut HIDClass<BusAdapter>,
     device: &mut UsbDevice<BusAdapter>,
 ) -> ! {
-    // let mut switch_active = ToggleSwitchActive{};
-    let switch_active = MomentarySwitchActive::new();
+    let switch_active = switch_active(pins);
 
     core_application_loop(
         pins,
@@ -479,8 +477,7 @@ fn keyboard_mission5(
     hid: &mut HIDClass<BusAdapter>,
     device: &mut UsbDevice<BusAdapter>,
 ) -> ! {
-    // let mut switch_active = ToggleSwitchActive{};
-    let switch_active = MomentarySwitchActive::new();
+    let switch_active = switch_active(pins);
 
     core_application_loop(
         pins,

@@ -20,7 +20,7 @@ The `keycode_translation` nested workspace contains logic that (badly) translate
 
 I build the code using the following BASH spell
 ```
-~/.cargo/bin/cargo +nightly build && ~/.cargo/bin/cargo +nightly objcopy --release -- -O ihex /tmp/kbd.hex
+~/.cargo/bin/cargo +nightly build --release && ~/.cargo/bin/cargo +nightly objcopy --release -- -O ihex /tmp/kbd.hex
 ````
 
 If you get `Failed to execute tool: objcopy` you probably need to
